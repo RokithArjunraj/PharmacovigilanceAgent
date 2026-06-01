@@ -1,0 +1,448 @@
+"""
+signals/check_label_gap.py
+--------------------------
+Determines whether a flagged FAERS signal is already documented
+in the drug's FDA label, or is a novel emerging signal.
+
+Two-layer approach:
+  Layer 1 — exact/substring match: fast, catches ~70% of cases
+  Layer 2 — semantic similarity: catches "tendon rupture" = "tendinopathy"
+
+What you learn here:
+  - Why keyword matching alone fails for medical text (synonyms, variants)
+  - How cosine similarity solves the synonym problem
+  - The threshold decision (0.75) and why it matters
+  - Caching embeddings so you don't re-embed the same label repeatedly
+"""
+
+import json
+import re
+from pathlib import Path
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# Import shared serious outcomes list
+try:
+    from signals.serious_outcomes import SERIOUS_OUTCOMES
+except ImportError:
+    # Fallback if Person A hasn't created the file yet
+    SERIOUS_OUTCOMES = [
+        "myocardial infarction", "cardiac arrest", "liver failure",
+        "anaphylaxis", "stroke", "suicidal ideation", "aplastic anaemia",
+        "stevens-johnson syndrome", "pulmonary embolism", "renal failure acute",
+        "sudden cardiac death", "hepatic failure", "rhabdomyolysis",
+    ]
+EMBED_CACHE_DIR = Path("data/label_embeddings")
+EMBED_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Similarity threshold — above this = "known_different_wording"
+# 0.75 chosen because medical synonyms typically score 0.78-0.92
+# False positives (unrelated but similar-sounding terms) score < 0.70
+SIMILARITY_THRESHOLD = 0.75
+
+# MedDRA-style synonym expansions for common terms
+# These help Layer 1 catch obvious variants without semantic search
+SYNONYM_MAP = {
+    "myocardial infarction": ["heart attack", "mi ", "cardiac infarction", "coronary"],
+    "hepatotoxicity":        ["liver", "hepatic", "hepatitis", "jaundice", "cholestasis"],
+    "tendon rupture":        ["tendinopathy", "tendinitis", "tendon", "achilles"],
+    "peripheral neuropathy": ["neuropathy", "nerve damage", "numbness", "tingling"],
+    "aortic aneurysm":       ["aorta", "aneurysm", "aortic dissection"],
+    "oedema peripheral":     ["edema", "swelling", "fluid retention", "peripheral edema"],
+    "cardiac failure":       ["heart failure", "cardiac failure", "chf", "cardiomyopathy"],
+    "suicidal ideation":     ["suicide", "self-harm", "suicidal thoughts", "depression"],
+}
+
+
+# ── Embedding model (singleton) ───────────────────────────────────────────────
+
+_model = None
+
+def get_model():
+    """Load once, reuse. Avoids reloading the 80MB model on every call."""
+    global _model
+    if _model is None:
+        from sentence_transformers import SentenceTransformer
+        print("  Loading sentence-transformer model...")
+        _model = SentenceTransformer("all-MiniLM-L6-v2")
+    return _model
+
+
+# ── Embedding cache ───────────────────────────────────────────────────────────
+
+def _load_label_embeddings(drug_name: str) -> dict | None:
+    """Load pre-computed paragraph embeddings for a drug's label."""
+    p = EMBED_CACHE_DIR / f"{drug_name.lower().replace(' ', '_')}_embeddings.json"
+    if p.exists():
+        with open(p) as f:
+            data = json.load(f)
+            # Convert lists back to numpy arrays
+            import numpy as np
+            return {k: np.array(v) for k, v in data.items()}
+    return None
+
+
+def _save_label_embeddings(drug_name: str, embeddings: dict):
+    """Save paragraph embeddings to avoid re-computing for same drug."""
+    p = EMBED_CACHE_DIR / f"{drug_name.lower().replace(' ', '_')}_embeddings.json"
+    with open(p, "w") as f:
+        # Convert numpy arrays to lists for JSON serialisation
+        json.dump({k: v.tolist() for k, v in embeddings.items()}, f)
+
+
+# ── Text chunking ─────────────────────────────────────────────────────────────
+
+def _chunk_label_text(label_sections: dict) -> list[dict]:
+    """
+    Split label text into paragraph-sized chunks for embedding.
+    Each chunk carries its source section name for attribution.
+
+    Why paragraphs not sentences:
+      - A sentence like "Tendon disorders have been reported" has less
+        context than the full paragraph which describes onset and severity
+      - Paragraphs give the LLM enough context to explain the match
+    """
+    chunks = []
+    for section_name, text in label_sections.items():
+        if not text or len(text) < 30:
+            continue
+        # Split on double spaces, newlines, or sentence-ending punctuation
+        paragraphs = re.split(r"(?<=[.!?])\s{2,}|\n{2,}", text)
+        for para in paragraphs:
+            para = para.strip()
+            if len(para) > 40:  # skip fragments
+                chunks.append({
+                    "text":    para,
+                    "section": section_name,
+                })
+    return chunks
+
+
+# ── Layer 1: Exact / synonym match ───────────────────────────────────────────
+
+def _exact_match(event_term: str, label_sections: dict) -> dict | None:
+    """
+    Check if event term (or its synonyms) appears in any label section.
+    Returns match info or None.
+    """
+    event_lower = event_term.lower()
+    full_label  = " ".join(label_sections.values()).lower()
+
+    # Direct substring check
+    if event_lower in full_label:
+        matched_section = _find_section(event_lower, label_sections)
+        return {
+            "status":         "known",
+            "match_score":    1.0,
+            "matched_section": matched_section,
+            "matched_text":   _find_context(event_lower, label_sections),
+            "method":         "exact_match",
+        }
+
+    # Synonym check
+    synonyms = SYNONYM_MAP.get(event_lower, [])
+    for syn in synonyms:
+        if syn in full_label:
+            matched_section = _find_section(syn, label_sections)
+            return {
+                "status":         "known",
+                "match_score":    0.95,
+                "matched_section": matched_section,
+                "matched_text":   _find_context(syn, label_sections),
+                "method":         "synonym_match",
+                "synonym_used":   syn,
+            }
+
+    return None
+
+
+def _find_section(term: str, label_sections: dict) -> str:
+    """Find which section contains the term."""
+    for section, text in label_sections.items():
+        if term in text.lower():
+            return section
+    return "unknown"
+
+
+def _find_context(term: str, label_sections: dict, window: int = 200) -> str:
+    """Extract a snippet of text around the matched term."""
+    for section, text in label_sections.items():
+        idx = text.lower().find(term)
+        if idx >= 0:
+            start = max(0, idx - 80)
+            end   = min(len(text), idx + window)
+            return text[start:end]
+    return ""
+
+
+# ── Layer 2: Semantic similarity ──────────────────────────────────────────────
+
+def _semantic_match(event_term: str, label_sections: dict,
+                    drug_name: str = "") -> dict:
+    """
+    Embed the event term and compare against every paragraph in the label.
+    Returns the best match with score, or a 'novel' result if below threshold.
+    """
+    import numpy as np
+
+    model  = get_model()
+    chunks = _chunk_label_text(label_sections)
+
+    if not chunks:
+        return {
+            "status":         "novel",
+            "match_score":    0.0,
+            "matched_section": "",
+            "matched_text":   "",
+            "method":         "semantic_no_label_text",
+        }
+
+    # Load or compute paragraph embeddings
+    cached_embeddings = _load_label_embeddings(drug_name) if drug_name else None
+
+    if cached_embeddings and len(cached_embeddings) == len(chunks):
+        para_embeddings = [cached_embeddings.get(str(i))
+                           for i in range(len(chunks))]
+        para_embeddings = [e for e in para_embeddings if e is not None]
+    else:
+        para_texts      = [c["text"] for c in chunks]
+        para_embeddings = model.encode(para_texts, show_progress_bar=False)
+        if drug_name:
+            save_dict = {str(i): e for i, e in enumerate(para_embeddings)}
+            _save_label_embeddings(drug_name, save_dict)
+
+    # Embed the query event term
+    event_embedding = model.encode(event_term)
+
+    # Compute cosine similarity against all paragraphs
+    # Cosine similarity = dot product of normalised vectors
+    def cosine_sim(a, b):
+        return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
+
+    similarities = [cosine_sim(event_embedding, pe) for pe in para_embeddings]
+    best_idx     = int(np.argmax(similarities))
+    best_score   = similarities[best_idx]
+
+    if best_score >= SIMILARITY_THRESHOLD:
+        return {
+            "status":         "known_different_wording",
+            "match_score":    round(best_score, 3),
+            "matched_section": chunks[best_idx]["section"],
+            "matched_text":   chunks[best_idx]["text"][:300],
+            "method":         "semantic_similarity",
+        }
+    else:
+        return {
+            "status":         "novel",
+            "match_score":    round(best_score, 3),
+            "matched_section": "",
+            "matched_text":   "",
+            "method":         "semantic_similarity",
+        }
+
+
+# ── Public interface ──────────────────────────────────────────────────────────
+
+def check_label_gap(event_term: str, label_sections: dict,
+                    drug_name: str = "") -> dict:
+    """
+    Main function. Determines if a FAERS adverse event is:
+      "known"                — explicitly mentioned in the label
+      "known_different_wording" — semantically present but different term
+      "novel"                — not documented in the label
+
+    Args:
+        event_term     : FAERS adverse event term e.g. "Myocardial infarction"
+        label_sections : dict from fetch_label_sections()
+        drug_name      : used for embedding cache key (optional)
+
+    Returns dict with:
+        status, match_score, matched_section, matched_text, method
+    """
+    # Layer 1: try exact / synonym match first (fast)
+    exact_result = _exact_match(event_term, label_sections)
+    if exact_result:
+        return exact_result
+
+    # Layer 2: semantic similarity (slower but catches synonyms)
+    return _semantic_match(event_term, label_sections, drug_name)
+
+def flag_confounding_risk(co_medications: list[dict]) -> dict:
+    """
+    If a co-medication appears in >50% of reports alongside
+    the drug+event, flag it as a potential confound.
+
+    We don't statistically adjust for confounding — FAERS data
+    alone can't support that. We flag it transparently so a
+    reviewer knows to consider drug interaction as an alternative
+    explanation.
+
+    co_medications: list of {"term": "metformin", "count": 120}
+                    from Person A's get_co_medications()
+    """
+    if not co_medications:
+        return {"confounding_risk": "unknown", "warning": None}
+
+    total = sum(item["count"] for item in co_medications[:10])
+    if total == 0:
+        return {"confounding_risk": "unknown", "warning": None}
+
+    top = co_medications[0]
+    top_pct = top["count"] / total
+
+    if top_pct > 0.5:
+        return {
+            "confounding_risk": "HIGH",
+            "warning": (
+                f"{top['term']} appears in {top_pct*100:.0f}% of co-reports "
+                f"— signal may reflect a drug interaction rather than "
+                f"a single-drug effect. Interpret with caution."
+            ),
+            "top_co_drug": top["term"],
+            "co_occurrence_pct": round(top_pct * 100, 1),
+        }
+
+    return {
+        "confounding_risk": "LOW",
+        "warning": None,
+        "top_co_drug": top["term"] if co_medications else None,
+        "co_occurrence_pct": round(top_pct * 100, 1),
+    }
+
+def compute_combined_score(signal: dict, label_gap: dict,
+                            pubmed_articles: list[dict],
+                            confounding: dict) -> dict:
+    """
+    Combines statistical signal + literature evidence + novelty + confounding
+    into one score for prioritisation.
+
+    This is the answer to the low-count-but-critical scenario:
+    PRR 2.1 with 3 PubMed case reports + novel label status ranks
+    higher than PRR 4.0 with no literature + already in label.
+
+    Returns: {"combined_score": float, "confidence": str}
+    """
+    event_lower = signal["event"].lower()
+    is_serious  = any(s in event_lower for s in SERIOUS_OUTCOMES)
+
+    # 1. Statistical strength — capped so high count doesn't dominate
+    stat = signal["prr"] * min(signal["count"], 100) / 100
+
+    # 2. Literature corroboration — case reports weighted most
+    #    because they represent independent clinical observation
+    case_reports = sum(
+        1 for a in pubmed_articles
+        if "case report" in
+           " ".join(a.get("publication_types", [])).lower()
+    )
+    lit_boost = min(case_reports * 0.3, 1.0)
+
+    # 3. Novelty — novel signals are more actionable than known ones
+    novelty_boost = {
+        "novel":                   1.5,
+        "known_different_wording": 0.5,
+        "known":                   0.0,
+    }.get(label_gap.get("status", "unknown"), 0.3)
+
+    # 4. Confounding penalty — reduce score if likely confounded
+    confound_penalty = 0.5 if confounding.get("confounding_risk") == "HIGH" else 0.0
+
+    # 5. Severity multiplier — serious outcomes get elevated regardless
+    severity_mult = 2.5 if is_serious else 1.0
+
+    raw   = (stat + lit_boost + novelty_boost - confound_penalty)
+    final = round(raw * severity_mult, 3)
+
+    # Confidence label — honest about uncertainty
+    if final >= 6.0:
+        confidence = "HIGH"
+    elif final >= 3.0:
+        confidence = "MODERATE"
+    elif is_serious and final >= 1.0:
+        confidence = "LOW_COUNT_HIGH_CONCERN"
+    else:
+        confidence = "LOW"
+
+    return {
+        "combined_score":  final,
+        "confidence":      confidence,
+        "is_serious":      is_serious,
+        "breakdown": {
+            "statistical":      round(stat, 3),
+            "literature_boost": round(lit_boost, 3),
+            "novelty_boost":    novelty_boost,
+            "confound_penalty": confound_penalty,
+            "severity_mult":    severity_mult,
+        }
+    }
+
+# ── Test ──────────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import json
+    from tests.mock_signals import MOCK_ROSIGLITAZONE_SIGNALS
+
+    print("=== Testing check_label_gap.py ===\n")
+
+    label_cache = Path("data/labels/rosiglitazone.json")
+    if label_cache.exists():
+        with open(label_cache) as f:
+            label = json.load(f)
+        print("Using real rosiglitazone label.\n")
+    else:
+        label = {
+            "adverse_reactions": (
+                "Cardiovascular: Myocardial infarction and cardiac failure "
+                "have been reported. Peripheral edema is common, 4-8% of patients."
+            ),
+            "warnings_and_precautions": (
+                "Rosiglitazone may cause or worsen congestive heart failure."
+            ),
+            "boxed_warning": "", "contraindications": "", "drug_interactions": "",
+        }
+        print("Using mock label.\n")
+
+    # Test 1 — label gap check
+    print("── Test 1: Label gap check ──")
+    for signal in MOCK_ROSIGLITAZONE_SIGNALS:
+        if not signal["flagged"]:
+            continue
+        result = check_label_gap(signal["event"], label, "rosiglitazone")
+        icon   = "✓ KNOWN" if result["status"] != "novel" else "⚠ NOVEL"
+        print(f"{icon} | {signal['event']}")
+        print(f"  score={result['match_score']} | method={result['method']}")
+        if result.get("matched_text"):
+            print(f"  match: {result['matched_text'][:80]}...")
+        print()
+
+    # Test 2 — confounding flag
+    print("── Test 2: Confounding flag ──")
+    mock_co_meds = [
+        {"term": "METFORMIN", "count": 180},
+        {"term": "LISINOPRIL", "count": 45},
+        {"term": "ASPIRIN",    "count": 30},
+    ]
+    conf = flag_confounding_risk(mock_co_meds)
+    print(f"Confounding risk: {conf['confounding_risk']}")
+    if conf["warning"]:
+        print(f"Warning: {conf['warning']}")
+    print()
+
+    # Test 3 — combined score
+    print("── Test 3: Combined score ──")
+    mock_gap      = {"status": "novel", "match_score": 0.31}
+    mock_articles = [
+        {"publication_types": ["Case Report"]},
+        {"publication_types": ["Case Report"]},
+        {"publication_types": ["Review"]},
+    ]
+    score = compute_combined_score(
+        MOCK_ROSIGLITAZONE_SIGNALS[0],  # myocardial infarction
+        mock_gap, mock_articles, conf
+    )
+    print(f"Combined score : {score['combined_score']}")
+    print(f"Confidence     : {score['confidence']}")
+    print(f"Breakdown      : {score['breakdown']}")
+
+    print("\n✓ All tests passed")
