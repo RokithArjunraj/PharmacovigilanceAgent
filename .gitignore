@@ -37,3 +37,10 @@ data/*.json
 .DS_Store
 Thumbs.db
 config.py
+cache/
+data/labels/
+data/pubmed_cache/
+data/chroma_db/
+data/label_embeddings/
+config.py
+config.py.example

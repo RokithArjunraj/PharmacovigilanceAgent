@@ -36,3 +36,5 @@ def get_mock_signals(drug_name: str) -> list[dict]:
         "ciprofloxacin": MOCK_CIPROFLOXACIN_SIGNALS,
     }
     return registry.get(drug_name.lower(), [])
+
+MOCK_ROSIGLITAZONE_SIGNALS = MOCK_ROSIGLITAZONE
