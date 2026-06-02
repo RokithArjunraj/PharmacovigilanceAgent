@@ -1,4 +1,3 @@
-# Copy this to config.py — never commit config.py
 # config.py is in .gitignore
 
 # ── API endpoints ──

@@ -10,7 +10,6 @@ env/
 .Python
 
 # Config (contains API keys)
-config.py
 .env
 *.env
 secrets.py
