@@ -248,7 +248,7 @@ def compute_composite_score(signal):
 # MAIN FUNCTION — the interface contract
 # ──────────────────────────────────────────────
 
-def detect_signals(drug_name, date_end=None, top_n=50, verbose=True, enrich=True):
+def detect_signals(drug_name, date_end=None, top_n=100, verbose=True, enrich=True):
     """
     Run full signal detection for a drug.
 

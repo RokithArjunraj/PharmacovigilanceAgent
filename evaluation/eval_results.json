@@ -1,0 +1,189 @@
+{
+  "run_date": "2026-06-02T17:17:57.585608",
+  "signal_recall": {
+    "hits": 5,
+    "total": 12,
+    "pct": 41.7
+  },
+  "abstention": {
+    "serious_false_positives": 0,
+    "total_controls": 4
+  },
+  "recall_details": [
+    {
+      "drug": "rosiglitazone",
+      "status": "HIT",
+      "category": "Cardiac disorders",
+      "flagged_total": 32,
+      "soc_matches": 1,
+      "top_match": {
+        "event": "CARDIAC FAILURE CONGESTIVE",
+        "prr": 7.549,
+        "count": 59,
+        "matched_keyword": "cardiac"
+      },
+      "total_reports": "20070101"
+    },
+    {
+      "drug": "pioglitazone",
+      "status": "MISS",
+      "category": "Neoplasms (bladder)",
+      "flagged_total": 17,
+      "soc_matches": 0,
+      "top_match": null,
+      "total_reports": "20110101"
+    },
+    {
+      "drug": "ciprofloxacin",
+      "status": "MISS",
+      "category": "Musculoskeletal (tendon)",
+      "flagged_total": 25,
+      "soc_matches": 0,
+      "top_match": null,
+      "total_reports": "20080101"
+    },
+    {
+      "drug": "canagliflozin",
+      "status": "HIT",
+      "category": "Metabolic / Surgical",
+      "flagged_total": 31,
+      "soc_matches": 2,
+      "top_match": {
+        "event": "DIABETIC KETOACIDOSIS",
+        "prr": 177.843,
+        "count": 96,
+        "matched_keyword": "ketoacidosis"
+      },
+      "total_reports": "20170101"
+    },
+    {
+      "drug": "zolpidem",
+      "status": "HIT",
+      "category": "Nervous system / Psychiatric",
+      "flagged_total": 21,
+      "soc_matches": 2,
+      "top_match": {
+        "event": "SOMNAMBULISM",
+        "prr": 41.525,
+        "count": 255,
+        "matched_keyword": "somnambulism"
+      },
+      "total_reports": "20120701"
+    },
+    {
+      "drug": "loperamide",
+      "status": "MISS",
+      "category": "Cardiac disorders",
+      "flagged_total": 27,
+      "soc_matches": 0,
+      "top_match": null,
+      "total_reports": "20160101"
+    },
+    {
+      "drug": "omeprazole",
+      "status": "MISS",
+      "category": "Metabolic / Infections",
+      "flagged_total": 14,
+      "soc_matches": 0,
+      "top_match": null,
+      "total_reports": "20110601"
+    },
+    {
+      "drug": "varenicline",
+      "status": "HIT",
+      "category": "Psychiatric disorders",
+      "flagged_total": 30,
+      "soc_matches": 2,
+      "top_match": {
+        "event": "SUICIDAL IDEATION",
+        "prr": 11.46,
+        "count": 113,
+        "matched_keyword": "suicid"
+      },
+      "total_reports": "20090101"
+    },
+    {
+      "drug": "dapagliflozin",
+      "status": "MISS",
+      "category": "Metabolic disorders",
+      "flagged_total": 26,
+      "soc_matches": 0,
+      "top_match": null,
+      "total_reports": "20150101"
+    },
+    {
+      "drug": "metoclopramide",
+      "status": "MISS",
+      "category": "Nervous system (movement)",
+      "flagged_total": 23,
+      "soc_matches": 0,
+      "top_match": null,
+      "total_reports": "20080601"
+    },
+    {
+      "drug": "dronedarone",
+      "status": "HIT",
+      "category": "Hepatobiliary disorders",
+      "flagged_total": 41,
+      "soc_matches": 1,
+      "top_match": {
+        "event": "LIVER FUNCTION TEST ABNORMAL",
+        "prr": 7.133,
+        "count": 3,
+        "matched_keyword": "liver"
+      },
+      "total_reports": "20101001"
+    },
+    {
+      "drug": "olmesartan",
+      "status": "MISS",
+      "category": "Gastrointestinal disorders",
+      "flagged_total": 20,
+      "soc_matches": 0,
+      "top_match": null,
+      "total_reports": "20130101"
+    }
+  ],
+  "abstention_details": [
+    {
+      "drug": "lisinopril",
+      "flagged_total": 10,
+      "serious_flagged": 0,
+      "top_events": [
+        "ANGIOEDEMA",
+        "CHRONIC KIDNEY DISEASE",
+        "ACUTE KIDNEY INJURY"
+      ]
+    },
+    {
+      "drug": "levothyroxine",
+      "flagged_total": 9,
+      "serious_flagged": 0,
+      "top_events": [
+        "CONSTIPATION",
+        "FALL",
+        "ALOPECIA"
+      ]
+    },
+    {
+      "drug": "amlodipine",
+      "flagged_total": 11,
+      "serious_flagged": 0,
+      "top_events": [
+        "ACUTE KIDNEY INJURY",
+        "BLOOD PRESSURE INCREASED",
+        "HYPOTENSION"
+      ]
+    },
+    {
+      "drug": "cetirizine",
+      "flagged_total": 30,
+      "serious_flagged": 0,
+      "top_events": [
+        "PEMPHIGUS",
+        "HAND DEFORMITY",
+        "PERICARDITIS"
+      ]
+    }
+  ]
+}
