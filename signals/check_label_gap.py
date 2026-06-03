@@ -39,19 +39,30 @@ EMBED_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 # Similarity threshold — above this = "known_different_wording"
 # 0.75 chosen because medical synonyms typically score 0.78-0.92
 # False positives (unrelated but similar-sounding terms) score < 0.70
-SIMILARITY_THRESHOLD = 0.75
+SIMILARITY_THRESHOLD = 0.68
+SIMILARITY_THRESHOLD_SERIOUS = 0.58
 
 # MedDRA-style synonym expansions for common terms
 # These help Layer 1 catch obvious variants without semantic search
 SYNONYM_MAP = {
-    "myocardial infarction": ["heart attack", "mi ", "cardiac infarction", "coronary"],
-    "hepatotoxicity":        ["liver", "hepatic", "hepatitis", "jaundice", "cholestasis"],
-    "tendon rupture":        ["tendinopathy", "tendinitis", "tendon", "achilles"],
-    "peripheral neuropathy": ["neuropathy", "nerve damage", "numbness", "tingling"],
-    "aortic aneurysm":       ["aorta", "aneurysm", "aortic dissection"],
-    "oedema peripheral":     ["edema", "swelling", "fluid retention", "peripheral edema"],
-    "cardiac failure":       ["heart failure", "cardiac failure", "chf", "cardiomyopathy"],
-    "suicidal ideation":     ["suicide", "self-harm", "suicidal thoughts", "depression"],
+    "myocardial infarction":     ["heart attack", "mi ", "cardiac infarction", "coronary"],
+    "hepatotoxicity":            ["liver", "hepatic", "hepatitis", "jaundice", "cholestasis"],
+    "tendon rupture":            ["tendinopathy", "tendinitis", "tendon", "achilles"],
+    "peripheral neuropathy":     ["neuropathy", "nerve damage", "numbness", "tingling"],
+    "aortic aneurysm":           ["aorta", "aneurysm", "aortic dissection"],
+    "oedema peripheral":         ["edema", "swelling", "fluid retention", "peripheral edema"],
+    "cardiac failure":           ["heart failure", "cardiac failure", "chf", "cardiomyopathy"],
+    "suicidal ideation":         ["suicide", "self-harm", "suicidal thoughts", "depression"],
+    "hyperkalaemia":             ["high potassium", "elevated potassium", "hyperkalemia", "potassium"],
+    "renal failure acute":       ["acute kidney injury", "aki", "acute renal", "kidney failure"],
+    "cardiac failure congestive":["congestive heart failure", "chf", "heart failure", "cardiac failure"],
+    "hepatocellular injury":     ["hepatotoxicity", "liver injury", "liver damage", "hepatic injury"],
+    "cough":                     ["dry cough", "persistent cough", "cough"],
+    "angioedema":                ["swelling", "angioedema", "face swelling", "throat swelling"],
+    "pancytopenia":              ["bone marrow", "blood count", "myelosuppression", "pancytopenia"],
+    "agranulocytosis":           ["low white blood cell", "neutropenia", "granulocyte"],
+    "alopecia":                  ["hair loss", "hair thinning"],
+    "hyponatraemia":             ["low sodium", "sodium", "hyponatremia"],
 }
 
 
@@ -108,52 +119,54 @@ def _chunk_label_text(label_sections: dict) -> list[dict]:
         if not text or len(text) < 30:
             continue
         # Split on double spaces, newlines, or sentence-ending punctuation
-        paragraphs = re.split(r"(?<=[.!?])\s{2,}|\n{2,}", text)
-        for para in paragraphs:
-            para = para.strip()
-            if len(para) > 40:  # skip fragments
-                chunks.append({
-                    "text":    para,
-                    "section": section_name,
-                })
-    return chunks
+        import re
+        paragraphs = re.split(r'(?<=[.!?])\s+', text)
+        # Then group into ~2-3 sentence chunks for better embedding quality
+        chunks = []
+        buffer = []
+        for sent in paragraphs:
+            buffer.append(sent)
+            if len(' '.join(buffer)) > 150:  # ~2-3 sentences
+                chunks.append(' '.join(buffer))
+                buffer = []
+        if buffer:
+            chunks.append(' '.join(buffer))
+        return chunks
 
 
 # ── Layer 1: Exact / synonym match ───────────────────────────────────────────
 
-def _exact_match(event_term: str, label_sections: dict) -> dict | None:
-    """
-    Check if event term (or its synonyms) appears in any label section.
-    Returns match info or None.
-    """
+def _exact_match(event_term, label_sections):
     event_lower = event_term.lower()
-    full_label  = " ".join(label_sections.values()).lower()
-
-    # Direct substring check
-    if event_lower in full_label:
-        matched_section = _find_section(event_lower, label_sections)
-        return {
-            "status":         "known",
-            "match_score":    1.0,
-            "matched_section": matched_section,
-            "matched_text":   _find_context(event_lower, label_sections),
-            "method":         "exact_match",
-        }
-
-    # Synonym check
-    synonyms = SYNONYM_MAP.get(event_lower, [])
-    for syn in synonyms:
-        if syn in full_label:
-            matched_section = _find_section(syn, label_sections)
-            return {
-                "status":         "known",
-                "match_score":    0.95,
-                "matched_section": matched_section,
-                "matched_text":   _find_context(syn, label_sections),
-                "method":         "synonym_match",
-                "synonym_used":   syn,
-            }
-
+    
+    # Check ADR sections only first
+    ADR_SECTIONS = {"adverse_reactions", "boxed_warning", "warnings_and_precautions"}
+    adr_text = " ".join(
+        v for k, v in label_sections.items() if k in ADR_SECTIONS
+    ).lower()
+    
+    if event_lower in adr_text:
+        matched_section = _find_section(event_lower, 
+            {k: v for k, v in label_sections.items() if k in ADR_SECTIONS})
+        return {"status": "known", "match_score": 1.0,
+                "matched_section": matched_section, "method": "exact_match",
+                "matched_text": _find_context(event_lower, label_sections)}
+    
+    # Now check if it's in indications — different status
+    indications_text = label_sections.get("indications_and_usage", "").lower()
+    if event_lower in indications_text:
+        return {"status": "indication_confound", "match_score": 1.0,
+                "matched_section": "indications_and_usage", "method": "exact_match",
+                "matched_text": _find_context(event_lower, label_sections)}
+    
+    # Synonym check against ADR sections only
+    for syn in SYNONYM_MAP.get(event_lower, []):
+        if syn in adr_text:
+            return {"status": "known", "match_score": 0.95,
+                    "matched_section": "adverse_reactions", "method": "synonym_match",
+                    "synonym_used": syn,
+                    "matched_text": _find_context(syn, label_sections)}
+    
     return None
 
 
@@ -224,7 +237,7 @@ def _semantic_match(event_term: str, label_sections: dict,
     best_idx     = int(np.argmax(similarities))
     best_score   = similarities[best_idx]
 
-    if best_score >= SIMILARITY_THRESHOLD:
+    if best_score >= SIMILARITY_THRESHOLD_SERIOUS:
         return {
             "status":         "known_different_wording",
             "match_score":    round(best_score, 3),

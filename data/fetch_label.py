@@ -25,6 +25,7 @@ DAILYMED_SPL    = "https://dailymed.nlm.nih.gov/dailymed/services/v2/spls/{setid
 
 # LOINC codes for safety-relevant sections
 SECTION_CODES = {
+    "indications_and_usage":     "34067-9",
     "boxed_warning":             "34066-1",
     "warnings_and_precautions":  "43685-7",
     "adverse_reactions":         "34084-4",

@@ -54,15 +54,31 @@ def _save_cache(drug: str, event: str, data: list):
 # ── PubMed API calls ──────────────────────────────────────────────────────────
 
 def _build_query(drug_name: str, event_name: str, strict: bool = True) -> str:
-    """
-    Build a PubMed query string.
-    strict=True adds publication type filters for higher quality evidence.
-    strict=False is the fallback when strict returns too few results.
-    """
-    base = f'("{drug_name}"[Title/Abstract]) AND ("{event_name}"[Title/Abstract])'
+    drug_term = f'"{drug_name}"[Title/Abstract]'
+    event_term = f'"{event_name}"[Title/Abstract]'
+    
+    # Causal/association terms — forces papers that study the relationship
+    causal_terms = (
+        '("adverse effect"[Title/Abstract] OR '
+        '"side effect"[Title/Abstract] OR '
+        '"induced"[Title/Abstract] OR '
+        '"toxicity"[Title/Abstract] OR '
+        '"associated with"[Title/Abstract] OR '
+        '"risk of"[Title/Abstract] OR '
+        '"adverse reaction"[Title/Abstract])'
+    )
+    
+    base = f"({drug_term}) AND ({event_term}) AND {causal_terms}"
+    
     if strict:
-        pub_types = "(case reports[pt] OR clinical study[pt] OR review[pt] OR meta-analysis[pt])"
+        pub_types = (
+            "(clinical trial[pt] OR randomized controlled trial[pt] OR "
+            "meta-analysis[pt] OR systematic review[pt] OR "
+            "case reports[pt] OR review[pt])"
+        )
         return f"{base} AND {pub_types}"
+    
+    # Fallback: drop pub type filter but keep causal terms
     return base
 
 

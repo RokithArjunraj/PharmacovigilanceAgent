@@ -26,4 +26,11 @@ SERIOUS_OUTCOMES = [
     "bladder cancer", "bladder neoplasm",
     "tendon rupture", "achilles tendon rupture",
     "amputation",
+    "hepatocellular injury", "hepatocellular damage",
+    "myelosuppression", "pancytopenia", "bone marrow failure",
+    "respiratory failure", "respiratory arrest",
+    "sepsis", "septic shock",
+    "haemorrhage", "intracranial haemorrhage",
+    "encephalopathy", "leukoencephalopathy",
+    "interstitial lung disease", "pulmonary fibrosis",
 ]
