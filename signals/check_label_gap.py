@@ -250,7 +250,7 @@ def _semantic_match(event_term: str, label_sections: dict,
             ind_embs   = model.encode([c["text"] for c in ind_chunks],
                                        show_progress_bar=False)
             ind_scores = [cosine_sim(event_embedding, e) for e in ind_embs]
-            if max(ind_scores) >= 0.72:   # higher bar — avoid false indication matches
+            if max(ind_scores) >= 0.62:   # MedDRA terms vs label prose score lower (~0.63-0.68)
                 return {
                     "status":          "indication_confound",
                     "match_score":     round(max(ind_scores), 3),
@@ -269,9 +269,10 @@ def check_label_gap(event_term: str, label_sections: dict,
                     drug_name: str = "") -> dict:
     """
     Main function. Determines if a FAERS adverse event is:
-      "known"                — explicitly mentioned in the label
+      "known"                   — explicitly mentioned in the label
       "known_different_wording" — semantically present but different term
-      "novel"                — not documented in the label
+      "novel"                   — not documented in the label
+      "indication_confound"     — matches the disease being TREATED
 
     Args:
         event_term     : FAERS adverse event term e.g. "Myocardial infarction"
@@ -281,12 +282,39 @@ def check_label_gap(event_term: str, label_sections: dict,
     Returns dict with:
         status, match_score, matched_section, matched_text, method
     """
-    # Layer 1: try exact / synonym match first (fast)
+    # ── Layer 0: Indication confound check ──────────────────────────────────
+    # Runs BEFORE ADR checks so indication terms (e.g. "synovitis" for
+    # azathioprine) don't leak through as "novel" signals.
+    # Uses semantic similarity against indications_and_usage — dynamic,
+    # no hardcoded drug/event lists required.
+    ind_text = label_sections.get("indications_and_usage", "")
+    if ind_text:
+        import numpy as np
+        model = get_model()
+        ind_chunks = _chunk_label_text({"indications_and_usage": ind_text})
+        if ind_chunks:
+            event_vec = model.encode(event_term, normalize_embeddings=True)
+            ind_embs  = model.encode(
+                [c["text"] for c in ind_chunks],
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            )
+            ind_scores = [float(np.dot(event_vec, e)) for e in ind_embs]
+            if max(ind_scores) >= 0.62:
+                return {
+                    "status":          "indication_confound",
+                    "match_score":     round(max(ind_scores), 3),
+                    "matched_section": "indications_and_usage",
+                    "matched_text":    "",
+                    "method":          "semantic_indication_layer0",
+                }
+
+    # ── Layer 1: Exact / synonym match (fast) ───────────────────────────────
     exact_result = _exact_match(event_term, label_sections)
     if exact_result:
         return exact_result
 
-    # Layer 2: semantic similarity (slower but catches synonyms)
+    # ── Layer 2: Semantic similarity against ADR sections (catches synonyms) ─
     return _semantic_match(event_term, label_sections, drug_name)
 
 def flag_confounding_risk(co_medications: list[dict]) -> dict:

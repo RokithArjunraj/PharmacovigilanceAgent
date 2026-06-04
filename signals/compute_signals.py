@@ -1,13 +1,16 @@
 """
-Signal Detection Engine — v2 (with gap fixes)
-===============================================
+Signal Detection Engine — v3 (dynamic seriousness + indication suppression)
+=============================================================================
 Person A owns this file.
 
-Changes from v1:
-- Context-sensitive thresholds (lower bar for serious events)
-- Co-medication confounding check per flagged signal
-- Sex-stratified signal breakdown
-- Composite ranking score (severity × statistics × context)
+Changes from v2:
+- Replaced hardcoded SERIOUS_OUTCOMES list with is_serious_dynamic()
+  sourced from serious_outcomes.py + live FAERS reporter flags
+- Fetches FAERS serious event counts per drug at startup (one extra
+  API call, cached) — seriousness is now FDA 21 CFR 314.81 sourced,
+  not hardcoded
+- is_signal() uses is_serious_dynamic() with the live faers_serious_set
+- indication confound suppression unchanged (already correct)
 """
 
 import math
@@ -17,6 +20,7 @@ import os
 
 from data.fetch_label import fetch_label_sections
 from signals.check_label_gap import check_label_gap
+from signals.serious_outcomes import is_serious_dynamic
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -25,34 +29,7 @@ from config import PRR_THRESHOLD, CHI_SQUARED_THRESHOLD, MIN_REPORT_COUNT
 
 
 # ──────────────────────────────────────────────
-# GAP 5 FIX: Serious outcomes list
-# Events on this list get lower flagging thresholds
-# because missing a cardiac death is worse than
-# missing a case of nausea.
-# ──────────────────────────────────────────────
-SERIOUS_OUTCOMES = [
-    "myocardial infarction", "cardiac arrest", "sudden cardiac death",
-    "cardiac failure", "cardiac failure congestive",
-    "hepatic failure", "liver failure", "hepatotoxicity",
-    "anaphylaxis", "anaphylactic shock",
-    "cerebrovascular accident", "stroke",
-    "suicidal ideation", "completed suicide", "suicide attempt",
-    "aplastic anaemia", "agranulocytosis",
-    "stevens-johnson syndrome", "toxic epidermal necrolysis",
-    "pulmonary embolism", "deep vein thrombosis",
-    "rhabdomyolysis", "renal failure acute",
-    "cardiac arrest", "ventricular tachycardia", "torsade de pointes",
-    "qt prolonged",
-    "tardive dyskinesia",
-    "diabetic ketoacidosis",
-    "bladder cancer", "bladder neoplasm",
-    "tendon rupture", "achilles tendon rupture",
-    "amputation",
-]
-
-
-# ──────────────────────────────────────────────
-# STATISTICS FUNCTIONS (unchanged from v1)
+# STATISTICS FUNCTIONS (unchanged from v2)
 # ──────────────────────────────────────────────
 
 def compute_prr(a, b, c, d):
@@ -106,24 +83,19 @@ def compute_prr_confidence_interval(a, b, c, d, prr):
 
 
 # ──────────────────────────────────────────────
-# GAP 5 FIX: Context-sensitive flagging
-# Lower thresholds for serious/life-threatening events
-# and for rare drugs with few total reports.
+# CONTEXT-SENSITIVE FLAGGING
+# Lower thresholds for serious/life-threatening events.
+# Seriousness is now dynamic — see is_serious_dynamic()
+# in serious_outcomes.py.
 # ──────────────────────────────────────────────
-
-def is_serious_event(event_name):
-    """Check if this event is life-threatening or irreversible."""
-    event_lower = event_name.lower()
-    return any(s in event_lower for s in SERIOUS_OUTCOMES)
 
 def get_prr_threshold(total_drug_reports: int, is_serious: bool) -> float:
     """
     Raise the PRR bar as evidence base grows.
-    With 100k reports, PRR 2.0 is trivially significant — raise to 3.5.
+    With 100k reports, PRR 2.0 is trivially significant — raise to 4.0.
     With 1k reports, PRR 2.0 is meaningful — keep at 2.0.
     """
     if is_serious:
-        # Always lower bar for serious events, but still scale
         if total_drug_reports > 50_000: return 2.0
         if total_drug_reports > 10_000: return 1.8
         return 1.5
@@ -133,16 +105,21 @@ def get_prr_threshold(total_drug_reports: int, is_serious: bool) -> float:
         if total_drug_reports > 1_000:  return 2.0
         return 1.5
 
-def is_signal(event_name, count, prr, chi2, total_drug_reports=None):
-    serious = is_serious_event(event_name)
+
+def is_signal(event_name, count, prr, chi2, total_drug_reports=None,
+              faers_serious_set=None):
+    """
+    Flag a signal using dynamic seriousness classification.
+    faers_serious_set: set of lowercased terms from FAERS serious:1 query.
+    """
+    serious = is_serious_dynamic(event_name, faers_serious_set)
     threshold = get_prr_threshold(total_drug_reports or 0, serious)
     min_count = 2 if serious else MIN_REPORT_COUNT
     return count >= min_count and prr >= threshold and chi2 >= 3.0
 
 
-
 # ──────────────────────────────────────────────
-# GAP 2 FIX: Confounding check
+# GAP 2 FIX: Confounding check (unchanged)
 # ──────────────────────────────────────────────
 
 def check_confounding(client, drug_name, event_name, total_drug_reports, date_end=None):
@@ -168,7 +145,7 @@ def check_confounding(client, drug_name, event_name, total_drug_reports, date_en
 
 
 # ──────────────────────────────────────────────
-# GAP 4 PARTIAL FIX: Sex-stratified breakdown
+# GAP 4 PARTIAL FIX: Sex-stratified breakdown (unchanged)
 # ──────────────────────────────────────────────
 
 def get_sex_breakdown(client, drug_name, event_name, date_end=None):
@@ -195,7 +172,7 @@ def get_sex_breakdown(client, drug_name, event_name, date_end=None):
 
 
 # ──────────────────────────────────────────────
-# GAP 6 FIX: Weber effect flag
+# GAP 6 FIX: Weber effect flag (unchanged)
 # ──────────────────────────────────────────────
 
 def check_weber_effect(drug_name):
@@ -216,28 +193,17 @@ def check_weber_effect(drug_name):
 
 
 # ──────────────────────────────────────────────
-# COMPOSITE RANKING
+# COMPOSITE RANKING (unchanged)
 # ──────────────────────────────────────────────
 
 def compute_composite_score(signal):
     """
-    Rank signals by a combination of statistical strength,
-    clinical severity, and contextual flags.
-
-    A serious event with PRR 2.1 ranks above a trivial event
-    with PRR 4.0. This matches clinical priority.
+    Rank signals by statistical strength, clinical severity,
+    and contextual flags.
     """
-    # Base: statistical strength (cap count contribution so
-    # very common events don't dominate)
     stat_score = signal["prr"] * min(signal["count"], 100) / 100
-
-    # Severity multiplier
     severity_mult = 2.5 if signal.get("is_serious") else 1.0
-
-    # Sex imbalance bonus
     sex_bonus = 0.5 if signal.get("sex_breakdown", {}).get("sex_alert") else 0
-
-    # Confounding penalty (reduce score if likely confounded)
     confound_penalty = -0.5 if signal.get("confounding_warning") else 0
 
     score = (stat_score + sex_bonus + confound_penalty) * severity_mult
@@ -245,7 +211,7 @@ def compute_composite_score(signal):
 
 
 # ──────────────────────────────────────────────
-# MAIN FUNCTION — the interface contract
+# MAIN FUNCTION
 # ──────────────────────────────────────────────
 
 def detect_signals(drug_name, date_end=None, top_n=100, verbose=True, enrich=True):
@@ -264,6 +230,7 @@ def detect_signals(drug_name, date_end=None, top_n=100, verbose=True, enrich=Tru
         List of signal dicts sorted by composite_score descending.
     """
     client = FAERSClient()
+    label_sections = fetch_label_sections(drug_name)
 
     if verbose:
         print(f"\n{'='*65}")
@@ -273,8 +240,6 @@ def detect_signals(drug_name, date_end=None, top_n=100, verbose=True, enrich=Tru
         print(f"{'='*65}")
 
     # Step 1: Get event counts
-    # Fetch label once — used for indication suppression during flagging
-    label_sections = fetch_label_sections(drug_name)
     events = client.get_event_counts(drug_name, date_end=date_end, limit=top_n)
     if not events:
         if verbose:
@@ -288,6 +253,17 @@ def detect_signals(drug_name, date_end=None, top_n=100, verbose=True, enrich=Tru
     db_total = client.get_total_database_size(date_end=date_end)
     if verbose:
         print(f"  Drug reports: {drug_total:,} | DB total: {db_total:,}")
+
+    # ── NEW v3: Fetch FAERS reporter-flagged serious events for this drug ──
+    # serious:1 in FAERS = reporter flagged as death/hospitalisation/
+    # life-threatening/disability per FDA 21 CFR 314.81.
+    # This is the FDA's own classification — no hardcoding required.
+    serious_events_raw = client.get_serious_event_counts(
+        drug_name, date_end=date_end, limit=100
+    )
+    faers_serious_set = {e["term"].lower() for e in serious_events_raw}
+    if verbose:
+        print(f"  FAERS serious events (reporter-flagged): {len(faers_serious_set)}")
 
     # Weber effect check
     weber_warning = check_weber_effect(drug_name)
@@ -303,7 +279,7 @@ def detect_signals(drug_name, date_end=None, top_n=100, verbose=True, enrich=Tru
         event_name = event_data["term"]
         a = event_data["count"]
 
-        if a < 2:  # minimum 2 for even the relaxed threshold
+        if a < 2:
             continue
 
         event_total = client.get_total_event_reports(event_name, date_end=date_end)
@@ -312,12 +288,15 @@ def detect_signals(drug_name, date_end=None, top_n=100, verbose=True, enrich=Tru
         c = max(event_total - a, 0)
         d = max(db_total - a - b - c, 0)
 
-        prr = compute_prr(a, b, c, d)
-        ror = compute_ror(a, b, c, d)
-        chi2 = compute_chi_squared(a, b, c, d)
+        prr   = compute_prr(a, b, c, d)
+        ror   = compute_ror(a, b, c, d)
+        chi2  = compute_chi_squared(a, b, c, d)
         ci_lower, ci_upper = compute_prr_confidence_interval(a, b, c, d, prr)
-        serious = is_serious_event(event_name)
-        flagged = is_signal(event_name, a, prr, chi2, drug_total)
+
+        # ── v3: dynamic seriousness using FAERS reporter flags ──
+        serious = is_serious_dynamic(event_name, faers_serious_set)
+        flagged = is_signal(event_name, a, prr, chi2, drug_total, faers_serious_set)
+
         # Suppress indication confounds before counting as flagged
         label_status = "unknown"
         if flagged and label_sections:
@@ -327,16 +306,16 @@ def detect_signals(drug_name, date_end=None, top_n=100, verbose=True, enrich=Tru
                 flagged = False   # remove from flagged count entirely
 
         signal = {
-            "drug": drug_name,
-            "event": event_name,
-            "count": a,
-            "prr": round(prr, 3),
-            "ror": round(ror, 3),
-            "chi_squared": round(chi2, 3),
-            "prr_ci_lower": ci_lower,
-            "prr_ci_upper": ci_upper,
-            "flagged": flagged,
-            "is_serious": serious,
+            "drug":          drug_name,
+            "event":         event_name,
+            "count":         a,
+            "prr":           round(prr, 3),
+            "ror":           round(ror, 3),
+            "chi_squared":   round(chi2, 3),
+            "prr_ci_lower":  ci_lower,
+            "prr_ci_upper":  ci_upper,
+            "flagged":       flagged,
+            "is_serious":    serious,
             "threshold_used": "relaxed" if (serious or drug_total < 1000) else "standard",
         }
 
@@ -352,17 +331,13 @@ def detect_signals(drug_name, date_end=None, top_n=100, verbose=True, enrich=Tru
             print(f"\n  Enriching {len(flagged_signals)} flagged signals...")
 
         for s in flagged_signals:
-            # Co-medication confounding check (Gap 2)
             s["confounding_warning"] = check_confounding(
                 client, drug_name, s["event"], drug_total, date_end
             )
-
-            # Sex breakdown (Gap 4)
             s["sex_breakdown"] = get_sex_breakdown(
                 client, drug_name, s["event"], date_end
             )
 
-        # Add weber warning to all signals
         if weber_warning:
             for s in signals:
                 s["weber_warning"] = weber_warning
@@ -374,7 +349,7 @@ def detect_signals(drug_name, date_end=None, top_n=100, verbose=True, enrich=Tru
     signals.sort(key=lambda s: s["composite_score"], reverse=True)
 
     if verbose:
-        flagged_count = sum(1 for s in signals if s["flagged"])
+        flagged_count   = sum(1 for s in signals if s["flagged"])
         serious_flagged = sum(1 for s in signals if s["flagged"] and s["is_serious"])
         print(f"\n  RESULT: {flagged_count} signals flagged ({serious_flagged} serious)")
 
@@ -397,7 +372,7 @@ def signals_to_dataframe(signals):
 if __name__ == "__main__":
 
     print("=" * 75)
-    print("SIGNAL DETECTION v2 — Rosiglitazone (all-time, enriched)")
+    print("SIGNAL DETECTION v3 — Rosiglitazone (all-time, enriched)")
     print("=" * 75)
 
     signals = detect_signals("rosiglitazone", top_n=25)
@@ -406,16 +381,16 @@ if __name__ == "__main__":
     print("-" * 75)
     for s in signals[:20]:
         flag = "  Y" if s["flagged"] else ""
-        ser = "  !" if s["is_serious"] else ""
+        ser  = "  !" if s["is_serious"] else ""
         print(f"{s['event'][:30]:<30} {s['count']:>5} {s['prr']:>7.2f} {s['ror']:>7.2f} "
               f"{s['composite_score']:>7.2f} {ser:>4} {flag}")
 
-    # Show enrichment details for flagged signals
     flagged = [s for s in signals if s["flagged"]]
     print(f"\n--- ENRICHMENT DETAILS ({len(flagged)} flagged signals) ---")
     for s in flagged[:5]:
         print(f"\n  {s['event']}:")
-        print(f"    PRR={s['prr']}, Threshold={s['threshold_used']}")
+        print(f"    PRR={s['prr']} (CI: {s['prr_ci_lower']}-{s['prr_ci_upper']}), "
+              f"ROR={s['ror']}, chi2={s['chi_squared']}")
         if s.get("confounding_warning"):
             print(f"    WARNING: {s['confounding_warning']}")
         sex = s.get("sex_breakdown", {})
@@ -429,8 +404,8 @@ if __name__ == "__main__":
     print("RETROSPECTIVE — Rosiglitazone pre-2007")
     print("=" * 75)
 
-    signals_retro = detect_signals("rosiglitazone", date_end="20070101", top_n=50)
-    flagged_retro = [s for s in signals_retro if s["flagged"]]
+    signals_retro  = detect_signals("rosiglitazone", date_end="20070101", top_n=50)
+    flagged_retro  = [s for s in signals_retro if s["flagged"]]
     print(f"\n{len(flagged_retro)} signals flagged from pre-2007 data")
 
     cardiac = [s for s in flagged_retro

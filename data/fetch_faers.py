@@ -97,6 +97,15 @@ class FAERSClient:
         "drug dispensing error",
         "intentional product misuse",
         "product substitution issue",
+        "intentional product use issue",      # ← different from "intentional product misuse"
+        "treatment failure",
+        "drug tolerance",
+        "drug intolerance",                   # borderline but not a specific ADR
+        "infusion related reaction",          # too generic to be actionable
+        "condition aggravated",
+        "disease progression",
+        "lack of efficacy",
+        "no adverse event",
     }
 
     def get_event_counts(self, drug_name, date_end=None, limit=100):
