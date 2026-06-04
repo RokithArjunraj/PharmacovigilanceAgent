@@ -110,7 +110,11 @@ def get_prr_threshold(total_drug_reports: int, is_serious: bool) -> float:
 def is_signal(event_name, count, prr, chi2, total_drug_reports=None):
     # Static seed list only for threshold — FAERS serious:1 is per-report
     # not per-event-type, inflates everything for immunosuppressants/oncology
-    serious = any(s in event_name.lower() for s in SERIOUS_OUTCOMES)
+    import re
+    serious = any(
+        re.search(r'\b' + re.escape(s) + r'\b', event_name.lower())
+        for s in SERIOUS_OUTCOMES
+    )   
     threshold = get_prr_threshold(total_drug_reports or 0, serious)
     min_count = 2 if serious else MIN_REPORT_COUNT
     return count >= min_count and prr >= threshold and chi2 >= 3.0

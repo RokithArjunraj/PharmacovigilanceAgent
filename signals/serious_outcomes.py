@@ -46,31 +46,12 @@ SERIOUS_OUTCOMES = [
 ]
 
 
+import re
+
 def is_serious_dynamic(event_name: str, faers_serious_set: set = None) -> bool:
-    """
-    Check seriousness against both the static seed list and a
-    dynamic set of FAERS reporter-flagged serious events for this drug.
-
-    Args:
-        event_name:        MedDRA adverse event term.
-        faers_serious_set: Set of lowercased event terms from
-                           FAERSClient.get_serious_event_counts().
-                           These are reporter-flagged per FDA 21 CFR 314.81
-                           (death / hospitalisation / life-threatening /
-                           disability / congenital anomaly) — no hardcoding.
-
-    Returns:
-        True if serious by either source.
-    """
     event_lower = event_name.lower()
-
-    # Check static seed list (substring match — catches "acute renal failure"
-    # matching "renal failure acute" etc.)
-    if any(s in event_lower for s in SERIOUS_OUTCOMES):
+    if any(re.search(r'\b' + re.escape(s) + r'\b', event_lower) for s in SERIOUS_OUTCOMES):
         return True
-
-    # Check dynamic FAERS-sourced serious events for this drug
     if faers_serious_set and event_lower in faers_serious_set:
         return True
-
     return False
