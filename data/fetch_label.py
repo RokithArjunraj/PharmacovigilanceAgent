@@ -150,6 +150,15 @@ def _parse_sections(xml_text: str) -> dict:
 
     return sections
 
+def _fetch_xml(setid: str) -> str | None:
+    """Download the full SPL XML for a given setid."""
+    try:
+        resp = requests.get(DAILYMED_SPL.format(setid=setid), timeout=30)
+        resp.raise_for_status()
+        return resp.text
+    except Exception as e:
+        print(f"  DailyMed XML fetch error for setid '{setid}': {e}")
+    return None
 
 # ── Public interface ──────────────────────────────────────────────────────────
 
