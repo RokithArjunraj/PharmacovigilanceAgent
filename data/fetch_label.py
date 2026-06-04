@@ -233,3 +233,7 @@ if __name__ == "__main__":
                 print(f"  {name}: {text[:120]}...")
 
     print("\n✓ fetch_label.py working")
+
+    sections = fetch_label_sections("azathioprine")
+    print("indications:", sections["indications_and_usage"][:200])
+    print("adverse_reactions:", sections["adverse_reactions"][:200])

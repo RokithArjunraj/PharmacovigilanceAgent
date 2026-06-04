@@ -292,7 +292,7 @@ def detect_signals(drug_name, date_end=None, top_n=100, verbose=True, enrich=Tru
         ci_lower, ci_upper = compute_prr_confidence_interval(a, b, c, d, prr)
 
         # ── v3: dynamic seriousness using FAERS reporter flags ──
-        serious = is_serious_dynamic(event_name, faers_serious_set)
+        serious = is_serious_dynamic(event_name, faers_serious_set=None)
         flagged = is_signal(event_name, a, prr, chi2, drug_total)
 
         # Suppress indication confounds before counting as flagged
