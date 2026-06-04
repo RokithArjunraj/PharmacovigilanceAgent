@@ -57,46 +57,38 @@ def _save_cache(drug_name: str, data: dict):
 
 
 # ── DailyMed API calls ────────────────────────────────────────────────────────
-
-def _get_setid(drug_name: str) -> str | None:
+def _get_all_setids(drug_name: str) -> list[str]:
     """
-    Search DailyMed and return the setid of the most recently
-    published label — not necessarily the brand.
-
-    Why: 28 labels exist for azathioprine. Page 1 returns a random
-    generic stub that may omit indications_and_usage. The most
-    recently published label has the most complete, up-to-date sections
-    regardless of manufacturer.
+    Get all setids for a drug from DailyMed.
+    Fetches all pages.
     """
-    try:
-        resp = requests.get(
-            DAILYMED_SEARCH,
-            params={"drug_name": drug_name, "pagesize": 10},
-            timeout=15
-        )
-        resp.raise_for_status()
-        results = resp.json().get("data", [])
+    setids = []
+    page = 1
+    while True:
+        try:
+            resp = requests.get(
+                DAILYMED_SEARCH,
+                params={"drug_name": drug_name, "pagesize": 10, "page": page},
+                timeout=15
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            results = data.get("data", [])
+            if not results:
+                break
+            setids.extend(r["setid"] for r in results)
 
-        if not results:
-            return None
+            # Check if more pages exist
+            if data["metadata"]["next_page"] == "null" or not data["metadata"].get("next_page_url"):
+                break
+            page += 1
+            time.sleep(0.3)
+        except Exception as e:
+            print(f"  DailyMed pagination error: {e}")
+            break
 
-        # Sort by published_date descending — most recent first
-        def parse_date(r):
-            from datetime import datetime
-            try:
-                return datetime.strptime(r.get("published_date", ""), "%b %d, %Y")
-            except ValueError:
-                return datetime.min
-
-        results_sorted = sorted(results, key=parse_date, reverse=True)
-        best = results_sorted[0]
-        print(f"  [DailyMed] Using: {best['title']} ({best['published_date']})")
-        return best["setid"]
-
-    except Exception as e:
-        print(f"  DailyMed search error for '{drug_name}': {e}")
-    return None
-
+    print(f"  [DailyMed] Found {len(setids)} labels for '{drug_name}'")
+    return setids
 
 # ── XML parsing ───────────────────────────────────────────────────────────────
 
@@ -164,43 +156,43 @@ def _fetch_xml(setid: str) -> str | None:
 
 def fetch_label_sections(drug_name: str) -> dict:
     """
-    Main function. Returns dict with keys:
-      boxed_warning, warnings_and_precautions, adverse_reactions,
-      contraindications, drug_interactions
-    Each value is plain text string (empty string if section not found).
-
-    Caches result to data/labels/{drug_name}.json — labels don't change.
+    Fetch ALL available labels for a drug from DailyMed and merge
+    their sections. Union of all ADRs and indications across all
+    manufacturers — no single label is authoritative.
     """
-    # Check cache first
     cached = _load_cache(drug_name)
     if cached:
         print(f"  [cache] label for '{drug_name}'")
         return cached
 
-    print(f"  Fetching DailyMed label for '{drug_name}'...")
+    print(f"  Fetching all DailyMed labels for '{drug_name}'...")
 
-    setid = _get_setid(drug_name)
-    if not setid:
-        # Try brand name fallback or return empty
-        print(f"  No setid found for '{drug_name}' — returning empty label")
-        empty = {k: "" for k in SECTION_CODES}
-        return empty
-
-    time.sleep(0.5)  # be polite to DailyMed
-
-    xml_text = _fetch_xml(setid)
-    if not xml_text:
+    # Get all setids for this drug
+    setids = _get_all_setids(drug_name)
+    if not setids:
         return {k: "" for k in SECTION_CODES}
 
-    sections = _parse_sections(xml_text)
-    _save_cache(drug_name, sections)
+    # Fetch and merge all labels
+    merged = {k: set() for k in SECTION_CODES}  # use sets to deduplicate
 
-    # Print summary
-    for name, text in sections.items():
-        status = f"{len(text)} chars" if text else "not found"
-        print(f"    {name}: {status}")
+    for setid in setids:
+        xml_text = _fetch_xml(setid)
+        if not xml_text:
+            continue
+        sections = _parse_sections(xml_text)
+        for key, text in sections.items():
+            if text.strip():
+                merged[key].add(text.strip())
+        time.sleep(0.3)  # rate limit
 
-    return sections
+    # Join all unique section texts
+    final = {k: " ".join(merged[k]) for k in SECTION_CODES}
+
+    _save_cache(drug_name, final)
+    return final
+
+
+
 
 
 # ── Test ──────────────────────────────────────────────────────────────────────

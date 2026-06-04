@@ -21,6 +21,7 @@ import os
 from data.fetch_label import fetch_label_sections
 from signals.check_label_gap import check_label_gap
 from signals.serious_outcomes import is_serious_dynamic
+from signals.serious_outcomes import SERIOUS_OUTCOMES
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -106,13 +107,10 @@ def get_prr_threshold(total_drug_reports: int, is_serious: bool) -> float:
         return 1.5
 
 
-def is_signal(event_name, count, prr, chi2, total_drug_reports=None,
-              faers_serious_set=None):
-    """
-    Flag a signal using dynamic seriousness classification.
-    faers_serious_set: set of lowercased terms from FAERS serious:1 query.
-    """
-    serious = is_serious_dynamic(event_name, faers_serious_set)
+def is_signal(event_name, count, prr, chi2, total_drug_reports=None):
+    # Static seed list only for threshold — FAERS serious:1 is per-report
+    # not per-event-type, inflates everything for immunosuppressants/oncology
+    serious = any(s in event_name.lower() for s in SERIOUS_OUTCOMES)
     threshold = get_prr_threshold(total_drug_reports or 0, serious)
     min_count = 2 if serious else MIN_REPORT_COUNT
     return count >= min_count and prr >= threshold and chi2 >= 3.0
