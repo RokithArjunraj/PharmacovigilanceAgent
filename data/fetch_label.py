@@ -59,31 +59,42 @@ def _save_cache(drug_name: str, data: dict):
 # ── DailyMed API calls ────────────────────────────────────────────────────────
 
 def _get_setid(drug_name: str) -> str | None:
-    """Search DailyMed for the drug, return the first setid found."""
+    """
+    Search DailyMed and return the setid of the most recently
+    published label — not necessarily the brand.
+
+    Why: 28 labels exist for azathioprine. Page 1 returns a random
+    generic stub that may omit indications_and_usage. The most
+    recently published label has the most complete, up-to-date sections
+    regardless of manufacturer.
+    """
     try:
         resp = requests.get(
             DAILYMED_SEARCH,
-            params={"drug_name": drug_name, "pagesize": 1},
+            params={"drug_name": drug_name, "pagesize": 10},
             timeout=15
         )
         resp.raise_for_status()
-        data = resp.json()
-        results = data.get("data", [])
-        if results:
-            return results[0].get("setid")
+        results = resp.json().get("data", [])
+
+        if not results:
+            return None
+
+        # Sort by published_date descending — most recent first
+        def parse_date(r):
+            from datetime import datetime
+            try:
+                return datetime.strptime(r.get("published_date", ""), "%b %d, %Y")
+            except ValueError:
+                return datetime.min
+
+        results_sorted = sorted(results, key=parse_date, reverse=True)
+        best = results_sorted[0]
+        print(f"  [DailyMed] Using: {best['title']} ({best['published_date']})")
+        return best["setid"]
+
     except Exception as e:
         print(f"  DailyMed search error for '{drug_name}': {e}")
-    return None
-
-
-def _fetch_xml(setid: str) -> str | None:
-    """Download the full SPL XML for a given setid."""
-    try:
-        resp = requests.get(DAILYMED_SPL.format(setid=setid), timeout=30)
-        resp.raise_for_status()
-        return resp.text
-    except Exception as e:
-        print(f"  DailyMed XML fetch error for setid '{setid}': {e}")
     return None
 
 
