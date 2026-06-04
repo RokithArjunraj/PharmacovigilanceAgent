@@ -11,6 +11,7 @@ What you learn here:
 """
 
 import json
+from logging import root
 import re
 import time
 import requests
@@ -131,14 +132,38 @@ def _parse_sections(xml_text: str) -> dict:
     code_to_name = {v: k for k, v in SECTION_CODES.items()}
 
     # Walk all <section> elements
+    # After LOINC match fails, try matching by title text
+    TITLE_FALLBACKS = {
+    "indications_and_usage":    ["indication", "indications"],
+    "adverse_reactions":        ["adverse reaction", "adverse event", "side effect"],
+    "warnings_and_precautions": ["warning", "precaution"],
+    "boxed_warning":            ["boxed warning", "black box"],
+    "contraindications":        ["contraindication"],
+    "drug_interactions":        ["drug interaction"],
+    }
     for section_el in root.iter("{urn:hl7-org:v3}section"):
         code_el = section_el.find("hl7:code", NS)
-        if code_el is None:
-            continue
-        loinc = code_el.get("code", "")
+        loinc = code_el.get("code", "") if code_el is not None else ""
+    
         if loinc in code_to_name:
-            raw_text = _extract_text_from_element(section_el)
-            sections[code_to_name[loinc]] = _clean_text(raw_text)
+            # Primary path — LOINC match
+            section_name = code_to_name[loinc]
+        else:
+            # Fallback — match by section title text
+            title_el = section_el.find("hl7:title", NS)
+            title_text = (title_el.text or "").lower() if title_el is not None else ""
+            section_name = None
+            for name, keywords in TITLE_FALLBACKS.items():
+                if any(kw in title_text for kw in keywords):
+                    section_name = name
+                    break
+            if not section_name:
+                continue
+    
+        raw_text = _extract_text_from_element(section_el)
+        # Append rather than overwrite — multiple sections may match
+        existing = sections.get(section_name, "")
+        sections[section_name] = (existing + " " + _clean_text(raw_text)).strip()
 
     return sections
 
