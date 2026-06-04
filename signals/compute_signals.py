@@ -15,6 +15,9 @@ import pandas as pd
 import sys
 import os
 
+from data.fetch_label import fetch_label_sections
+from signals.check_label_gap import check_label_gap
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data.fetch_faers import FAERSClient
@@ -113,32 +116,29 @@ def is_serious_event(event_name):
     event_lower = event_name.lower()
     return any(s in event_lower for s in SERIOUS_OUTCOMES)
 
+def get_prr_threshold(total_drug_reports: int, is_serious: bool) -> float:
+    """
+    Raise the PRR bar as evidence base grows.
+    With 100k reports, PRR 2.0 is trivially significant — raise to 3.5.
+    With 1k reports, PRR 2.0 is meaningful — keep at 2.0.
+    """
+    if is_serious:
+        # Always lower bar for serious events, but still scale
+        if total_drug_reports > 50_000: return 2.0
+        if total_drug_reports > 10_000: return 1.8
+        return 1.5
+    else:
+        if total_drug_reports > 50_000: return 4.0
+        if total_drug_reports > 10_000: return 3.0
+        if total_drug_reports > 1_000:  return 2.0
+        return 1.5
 
 def is_signal(event_name, count, prr, chi2, total_drug_reports=None):
-    """
-    Context-sensitive Evans' criteria.
-
-    Standard:  PRR >= 2.0, chi2 >= 4.0, count >= 3
-    Serious:   PRR >= 1.5, chi2 >= 4.0, count >= 2
-    Rare drug: PRR >= 1.5, chi2 >= 3.0, count >= 2
-
-    Interview answer: "We lower the threshold for serious events
-    because the cost of missing a cardiac death signal is much higher
-    than the cost of a false positive on nausea. This mirrors how
-    real pharmacovigilance teams triage — serious events get more
-    scrutiny at lower thresholds."
-    """
     serious = is_serious_event(event_name)
-    rare_drug = total_drug_reports is not None and total_drug_reports < 1000
+    threshold = get_prr_threshold(total_drug_reports or 0, serious)
+    min_count = 2 if serious else MIN_REPORT_COUNT
+    return count >= min_count and prr >= threshold and chi2 >= 3.0
 
-    if serious or rare_drug:
-        return count >= 2 and prr >= 1.5 and chi2 >= 3.0
-    else:
-        return (
-            count >= MIN_REPORT_COUNT
-            and prr >= PRR_THRESHOLD
-            and chi2 >= CHI_SQUARED_THRESHOLD
-        )
 
 
 # ──────────────────────────────────────────────
@@ -273,6 +273,8 @@ def detect_signals(drug_name, date_end=None, top_n=100, verbose=True, enrich=Tru
         print(f"{'='*65}")
 
     # Step 1: Get event counts
+    # Fetch label once — used for indication suppression during flagging
+    label_sections = fetch_label_sections(drug_name)
     events = client.get_event_counts(drug_name, date_end=date_end, limit=top_n)
     if not events:
         if verbose:
@@ -316,6 +318,13 @@ def detect_signals(drug_name, date_end=None, top_n=100, verbose=True, enrich=Tru
         ci_lower, ci_upper = compute_prr_confidence_interval(a, b, c, d, prr)
         serious = is_serious_event(event_name)
         flagged = is_signal(event_name, a, prr, chi2, drug_total)
+        # Suppress indication confounds before counting as flagged
+        label_status = "unknown"
+        if flagged and label_sections:
+            gap = check_label_gap(event_name, label_sections, drug_name)
+            label_status = gap["status"]
+            if label_status == "indication_confound":
+                flagged = False   # remove from flagged count entirely
 
         signal = {
             "drug": drug_name,

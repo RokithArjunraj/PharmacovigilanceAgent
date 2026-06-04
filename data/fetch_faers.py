@@ -98,7 +98,7 @@ class FAERSClient:
         "intentional product misuse",
         "product substitution issue",
     }
-    
+
     def get_event_counts(self, drug_name, date_end=None, limit=100):
         """
         Get adverse event counts for a drug (all name variants combined).
@@ -117,7 +117,7 @@ class FAERSClient:
             results = data.get("results", [])           # ← store first
             return [                                     # ← then filter, then return
                 r for r in results
-                if r["term"].lower() not in NON_CLINICAL_MEDDRA
+                if r["term"].lower() not in self.NON_CLINICAL_MEDDRA
             ]
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 404:

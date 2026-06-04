@@ -104,34 +104,31 @@ def _save_label_embeddings(drug_name: str, embeddings: dict):
 
 # ── Text chunking ─────────────────────────────────────────────────────────────
 
-def _chunk_label_text(label_sections: dict) -> list[dict]:
-    """
-    Split label text into paragraph-sized chunks for embedding.
-    Each chunk carries its source section name for attribution.
-
-    Why paragraphs not sentences:
-      - A sentence like "Tendon disorders have been reported" has less
-        context than the full paragraph which describes onset and severity
-      - Paragraphs give the LLM enough context to explain the match
-    """
-    chunks = []
+def _chunk_label_text(label_sections: dict,
+                      restrict_to: set = None) -> list[dict]:
+    import re
+    all_chunks = []
     for section_name, text in label_sections.items():
+        if restrict_to and section_name not in restrict_to:
+            continue
         if not text or len(text) < 30:
             continue
-        # Split on double spaces, newlines, or sentence-ending punctuation
-        import re
-        paragraphs = re.split(r'(?<=[.!?])\s+', text)
-        # Then group into ~2-3 sentence chunks for better embedding quality
-        chunks = []
+        sentences = re.split(r'(?<=[.!?])\s+', text)
         buffer = []
-        for sent in paragraphs:
+        for sent in sentences:
             buffer.append(sent)
-            if len(' '.join(buffer)) > 150:  # ~2-3 sentences
-                chunks.append(' '.join(buffer))
+            if len(' '.join(buffer)) > 150:
+                all_chunks.append({
+                    "text":    ' '.join(buffer),
+                    "section": section_name
+                })
                 buffer = []
         if buffer:
-            chunks.append(' '.join(buffer))
-        return chunks
+            all_chunks.append({
+                "text":    ' '.join(buffer),
+                "section": section_name
+            })
+    return all_chunks
 
 
 # ── Layer 1: Exact / synonym match ───────────────────────────────────────────
@@ -139,33 +136,33 @@ def _chunk_label_text(label_sections: dict) -> list[dict]:
 def _exact_match(event_term, label_sections):
     event_lower = event_term.lower()
     
-    # Check ADR sections only first
     ADR_SECTIONS = {"adverse_reactions", "boxed_warning", "warnings_and_precautions"}
+    
+    # Search ADR sections first
     adr_text = " ".join(
         v for k, v in label_sections.items() if k in ADR_SECTIONS
     ).lower()
     
     if event_lower in adr_text:
-        matched_section = _find_section(event_lower, 
-            {k: v for k, v in label_sections.items() if k in ADR_SECTIONS})
-        return {"status": "known", "match_score": 1.0,
-                "matched_section": matched_section, "method": "exact_match",
+        return {"status": "known", "method": "exact_match",
+                "matched_section": _find_section(event_lower, label_sections),
+                "match_score": 1.0,
                 "matched_text": _find_context(event_lower, label_sections)}
     
-    # Now check if it's in indications — different status
-    indications_text = label_sections.get("indications_and_usage", "").lower()
-    if event_lower in indications_text:
-        return {"status": "indication_confound", "match_score": 1.0,
-                "matched_section": "indications_and_usage", "method": "exact_match",
-                "matched_text": _find_context(event_lower, label_sections)}
-    
-    # Synonym check against ADR sections only
+    # Check synonyms against ADR sections
     for syn in SYNONYM_MAP.get(event_lower, []):
         if syn in adr_text:
-            return {"status": "known", "match_score": 0.95,
-                    "matched_section": "adverse_reactions", "method": "synonym_match",
-                    "synonym_used": syn,
+            return {"status": "known", "method": "synonym_match",
+                    "matched_section": "adverse_reactions",
+                    "match_score": 0.95, "synonym_used": syn,
                     "matched_text": _find_context(syn, label_sections)}
+    
+    # Only now check indications — separate status
+    indications_text = label_sections.get("indications_and_usage", "").lower()
+    if event_lower in indications_text:
+        return {"status": "indication_confound", "method": "exact_match",
+                "matched_section": "indications_and_usage",
+                "match_score": 1.0, "matched_text": ""}
     
     return None
 
@@ -191,69 +188,80 @@ def _find_context(term: str, label_sections: dict, window: int = 200) -> str:
 
 # ── Layer 2: Semantic similarity ──────────────────────────────────────────────
 
+ADR_SECTIONS = {"adverse_reactions", "boxed_warning", "warnings_and_precautions"}
+
 def _semantic_match(event_term: str, label_sections: dict,
                     drug_name: str = "") -> dict:
-    """
-    Embed the event term and compare against every paragraph in the label.
-    Returns the best match with score, or a 'novel' result if below threshold.
-    """
     import numpy as np
 
-    model  = get_model()
-    chunks = _chunk_label_text(label_sections)
+    model = get_model()
+
+    # Search ADR sections only — never match indications semantically as "known"
+    adr_only = {k: v for k, v in label_sections.items() if k in ADR_SECTIONS}
+    chunks = _chunk_label_text(adr_only)
 
     if not chunks:
-        return {
-            "status":         "novel",
-            "match_score":    0.0,
-            "matched_section": "",
-            "matched_text":   "",
-            "method":         "semantic_no_label_text",
-        }
+        return {"status": "novel", "match_score": 0.0,
+                "matched_section": "", "matched_text": "",
+                "method": "semantic_no_label_text"}
 
-    # Load or compute paragraph embeddings
-    cached_embeddings = _load_label_embeddings(drug_name) if drug_name else None
+    # Cache key uses only ADR sections so adding indications doesn't invalidate it
+    cache_key = drug_name + "_adr"
+    cached = _load_label_embeddings(cache_key) if drug_name else None
 
-    if cached_embeddings and len(cached_embeddings) == len(chunks):
-        para_embeddings = [cached_embeddings.get(str(i))
-                           for i in range(len(chunks))]
+    if cached and len(cached) == len(chunks):
+        para_embeddings = [cached.get(str(i)) for i in range(len(chunks))]
         para_embeddings = [e for e in para_embeddings if e is not None]
     else:
-        para_texts      = [c["text"] for c in chunks]
-        para_embeddings = model.encode(para_texts, show_progress_bar=False)
+        para_embeddings = model.encode(
+            [c["text"] for c in chunks], show_progress_bar=False
+        )
         if drug_name:
-            save_dict = {str(i): e for i, e in enumerate(para_embeddings)}
-            _save_label_embeddings(drug_name, save_dict)
+            _save_label_embeddings(cache_key,
+                                   {str(i): e for i, e in enumerate(para_embeddings)})
 
-    # Embed the query event term
     event_embedding = model.encode(event_term)
 
-    # Compute cosine similarity against all paragraphs
-    # Cosine similarity = dot product of normalised vectors
     def cosine_sim(a, b):
         return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
 
-    similarities = [cosine_sim(event_embedding, pe) for pe in para_embeddings]
-    best_idx     = int(np.argmax(similarities))
-    best_score   = similarities[best_idx]
+    similarities  = [cosine_sim(event_embedding, pe) for pe in para_embeddings]
+    best_idx      = int(np.argmax(similarities))
+    best_score    = similarities[best_idx]
 
-    if best_score >= SIMILARITY_THRESHOLD_SERIOUS:
+    # Use event-appropriate threshold
+    is_serious = any(s in event_term.lower() for s in SERIOUS_OUTCOMES)
+    threshold  = SIMILARITY_THRESHOLD_SERIOUS if is_serious else SIMILARITY_THRESHOLD
+
+    if best_score >= threshold:
         return {
-            "status":         "known_different_wording",
-            "match_score":    round(best_score, 3),
+            "status":          "known_different_wording",
+            "match_score":     round(best_score, 3),
             "matched_section": chunks[best_idx]["section"],
-            "matched_text":   chunks[best_idx]["text"][:300],
-            "method":         "semantic_similarity",
-        }
-    else:
-        return {
-            "status":         "novel",
-            "match_score":    round(best_score, 3),
-            "matched_section": "",
-            "matched_text":   "",
-            "method":         "semantic_similarity",
+            "matched_text":    chunks[best_idx]["text"][:300],
+            "method":          "semantic_similarity",
         }
 
+    # Semantic check against indications — separate status
+    ind_text = label_sections.get("indications_and_usage", "")
+    if ind_text:
+        ind_chunks = _chunk_label_text({"indications_and_usage": ind_text})
+        if ind_chunks:
+            ind_embs   = model.encode([c["text"] for c in ind_chunks],
+                                       show_progress_bar=False)
+            ind_scores = [cosine_sim(event_embedding, e) for e in ind_embs]
+            if max(ind_scores) >= 0.72:   # higher bar — avoid false indication matches
+                return {
+                    "status":          "indication_confound",
+                    "match_score":     round(max(ind_scores), 3),
+                    "matched_section": "indications_and_usage",
+                    "matched_text":    "",
+                    "method":          "semantic_indication_match",
+                }
+
+    return {"status": "novel", "match_score": round(best_score, 3),
+            "matched_section": "", "matched_text": "",
+            "method": "semantic_similarity"}
 
 # ── Public interface ──────────────────────────────────────────────────────────
 
@@ -422,6 +430,8 @@ if __name__ == "__main__":
         if not signal["flagged"]:
             continue
         result = check_label_gap(signal["event"], label, "rosiglitazone")
+        if result["status"] == "indication_confound":
+           continue
         icon   = "✓ KNOWN" if result["status"] != "novel" else "⚠ NOVEL"
         print(f"{icon} | {signal['event']}")
         print(f"  score={result['match_score']} | method={result['method']}")
