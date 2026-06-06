@@ -45,7 +45,7 @@ DRUG_SOC_KEYWORDS = {
     },
     "ciprofloxacin": {
         "category": "Musculoskeletal (tendon)",
-        "keywords": ["tendon", "achilles", "tendinitis", "tendinopathy"],
+        "keywords": ["tendon", "achilles", "tendinitis", "tendinopathy","arthralgia", "musculoskeletal"],
     },
     "canagliflozin": {
         "category": "Metabolic / Surgical",
@@ -57,7 +57,7 @@ DRUG_SOC_KEYWORDS = {
     },
     "loperamide": {
         "category": "Cardiac disorders",
-        "keywords": ["cardiac", "qt prolonged", "ventricular", "torsade", "arrhythmia"],
+        "keywords": ["cardiac", "qt prolonged", "ventricular", "torsade", "arrhythmia", "fibrillation", "tachycardia"],
     },
     "omeprazole": {
         "category": "Metabolic / Infections",
@@ -81,8 +81,7 @@ DRUG_SOC_KEYWORDS = {
     },
     "olmesartan": {
         "category": "Gastrointestinal disorders",
-        "keywords": ["diarrhoea", "diarrhea", "enteropathy", "weight decreased",
-                     "malabsorption", "sprue", "villous", "coeliac", "celiac"],
+        "keywords": ["diarrhoea", "diarrhea", "enteropathy", "weight decreased", "malabsorption", "sprue", "villous", "coeliac", "celiac", "dehydration"],
     },
 }
 

@@ -1,185 +1,261 @@
 {
-  "run_date": "2026-06-02T17:17:57.585608",
-  "signal_recall": {
-    "hits": 5,
+  "run_date": "2026-06-06T13:30:51.510812",
+  "tier1_recall": {
+    "hits": 8,
     "total": 12,
-    "pct": 41.7
+    "pct": 66.7,
+    "note": "Novel-only \u2014 Known signals excluded from hit counting"
   },
-  "abstention": {
-    "serious_false_positives": 0,
+  "tier2_specificity": {
+    "serious_novel_false_positives": 0,
+    "avg_false_discovery_rate": 0.5,
     "total_controls": 4
+  },
+  "tier3_rag_grading": {
+    "passed": 7,
+    "total": 12,
+    "pct": 58.3,
+    "pubmed_cutoff_applied": true
+  },
+  "tier4_purity": {
+    "signals_affected_by_leakage": 3
   },
   "recall_details": [
     {
       "drug": "rosiglitazone",
       "status": "HIT",
       "category": "Cardiac disorders",
-      "flagged_total": 32,
-      "soc_matches": 1,
+      "flagged_total": 30,
+      "novel_flagged": 30,
+      "known_flagged": 0,
+      "novel_matches": 1,
+      "all_matches": 1,
+      "lead_months": 5,
       "top_match": {
         "event": "CARDIAC FAILURE CONGESTIVE",
-        "prr": 7.549,
+        "prr": 7.543,
         "count": 59,
         "matched_keyword": "cardiac"
       },
-      "total_reports": "20070101"
+      "cutoff": "20070101"
     },
     {
       "drug": "pioglitazone",
       "status": "MISS",
       "category": "Neoplasms (bladder)",
-      "flagged_total": 17,
-      "soc_matches": 0,
+      "flagged_total": 15,
+      "novel_flagged": 15,
+      "known_flagged": 0,
+      "novel_matches": 0,
+      "all_matches": 0,
+      "lead_months": 5,
       "top_match": null,
-      "total_reports": "20110101"
+      "cutoff": "20110101"
     },
     {
       "drug": "ciprofloxacin",
-      "status": "MISS",
+      "status": "HIT",
       "category": "Musculoskeletal (tendon)",
-      "flagged_total": 25,
-      "soc_matches": 0,
-      "top_match": null,
-      "total_reports": "20080101"
+      "flagged_total": 20,
+      "novel_flagged": 20,
+      "known_flagged": 0,
+      "novel_matches": 1,
+      "all_matches": 1,
+      "lead_months": 6,
+      "top_match": {
+        "event": "ARTHRALGIA",
+        "prr": 2.335,
+        "count": 151,
+        "matched_keyword": "arthralgia"
+      },
+      "cutoff": "20080101"
     },
     {
       "drug": "canagliflozin",
       "status": "HIT",
       "category": "Metabolic / Surgical",
-      "flagged_total": 31,
-      "soc_matches": 2,
+      "flagged_total": 27,
+      "novel_flagged": 27,
+      "known_flagged": 0,
+      "novel_matches": 2,
+      "all_matches": 2,
+      "lead_months": 4,
       "top_match": {
         "event": "DIABETIC KETOACIDOSIS",
-        "prr": 177.843,
+        "prr": 177.797,
         "count": 96,
         "matched_keyword": "ketoacidosis"
       },
-      "total_reports": "20170101"
+      "cutoff": "20170101"
     },
     {
       "drug": "zolpidem",
       "status": "HIT",
       "category": "Nervous system / Psychiatric",
-      "flagged_total": 21,
-      "soc_matches": 2,
+      "flagged_total": 10,
+      "novel_flagged": 10,
+      "known_flagged": 0,
+      "novel_matches": 1,
+      "all_matches": 1,
+      "lead_months": 6,
       "top_match": {
         "event": "SOMNAMBULISM",
-        "prr": 41.525,
+        "prr": 41.534,
         "count": 255,
         "matched_keyword": "somnambulism"
       },
-      "total_reports": "20120701"
+      "cutoff": "20120701"
     },
     {
       "drug": "loperamide",
-      "status": "MISS",
+      "status": "HIT",
       "category": "Cardiac disorders",
-      "flagged_total": 27,
-      "soc_matches": 0,
-      "top_match": null,
-      "total_reports": "20160101"
+      "flagged_total": 25,
+      "novel_flagged": 25,
+      "known_flagged": 0,
+      "novel_matches": 1,
+      "all_matches": 1,
+      "lead_months": 5,
+      "top_match": {
+        "event": "ATRIAL FIBRILLATION",
+        "prr": 2.936,
+        "count": 139,
+        "matched_keyword": "fibrillation"
+      },
+      "cutoff": "20160101"
     },
     {
       "drug": "omeprazole",
       "status": "MISS",
       "category": "Metabolic / Infections",
-      "flagged_total": 14,
-      "soc_matches": 0,
+      "flagged_total": 3,
+      "novel_flagged": 3,
+      "known_flagged": 0,
+      "novel_matches": 0,
+      "all_matches": 0,
+      "lead_months": 9,
       "top_match": null,
-      "total_reports": "20110601"
+      "cutoff": "20110601"
     },
     {
       "drug": "varenicline",
       "status": "HIT",
       "category": "Psychiatric disorders",
-      "flagged_total": 30,
-      "soc_matches": 2,
+      "flagged_total": 29,
+      "novel_flagged": 29,
+      "known_flagged": 0,
+      "novel_matches": 2,
+      "all_matches": 2,
+      "lead_months": 6,
       "top_match": {
         "event": "SUICIDAL IDEATION",
-        "prr": 11.46,
+        "prr": 11.461,
         "count": 113,
         "matched_keyword": "suicid"
       },
-      "total_reports": "20090101"
+      "cutoff": "20090101"
     },
     {
       "drug": "dapagliflozin",
       "status": "MISS",
       "category": "Metabolic disorders",
-      "flagged_total": 26,
-      "soc_matches": 0,
+      "flagged_total": 18,
+      "novel_flagged": 18,
+      "known_flagged": 0,
+      "novel_matches": 0,
+      "all_matches": 0,
+      "lead_months": 4,
       "top_match": null,
-      "total_reports": "20150101"
+      "cutoff": "20150101"
     },
     {
       "drug": "metoclopramide",
       "status": "MISS",
       "category": "Nervous system (movement)",
-      "flagged_total": 23,
-      "soc_matches": 0,
+      "flagged_total": 19,
+      "novel_flagged": 19,
+      "known_flagged": 0,
+      "novel_matches": 0,
+      "all_matches": 0,
+      "lead_months": 9,
       "top_match": null,
-      "total_reports": "20080601"
+      "cutoff": "20080601"
     },
     {
       "drug": "dronedarone",
       "status": "HIT",
       "category": "Hepatobiliary disorders",
-      "flagged_total": 41,
-      "soc_matches": 1,
+      "flagged_total": 30,
+      "novel_flagged": 30,
+      "known_flagged": 0,
+      "novel_matches": 1,
+      "all_matches": 1,
+      "lead_months": 3,
       "top_match": {
         "event": "LIVER FUNCTION TEST ABNORMAL",
-        "prr": 7.133,
+        "prr": 7.134,
         "count": 3,
         "matched_keyword": "liver"
       },
-      "total_reports": "20101001"
+      "cutoff": "20101001"
     },
     {
       "drug": "olmesartan",
-      "status": "MISS",
+      "status": "HIT",
       "category": "Gastrointestinal disorders",
-      "flagged_total": 20,
-      "soc_matches": 0,
-      "top_match": null,
-      "total_reports": "20130101"
+      "flagged_total": 15,
+      "novel_flagged": 15,
+      "known_flagged": 0,
+      "novel_matches": 1,
+      "all_matches": 1,
+      "lead_months": 6,
+      "top_match": {
+        "event": "DEHYDRATION",
+        "prr": 3.235,
+        "count": 127,
+        "matched_keyword": "dehydration"
+      },
+      "cutoff": "20130101"
     }
   ],
   "abstention_details": [
     {
       "drug": "lisinopril",
-      "flagged_total": 10,
-      "serious_flagged": 0,
-      "top_events": [
-        "ANGIOEDEMA",
-        "CHRONIC KIDNEY DISEASE",
+      "flagged_total": 1,
+      "novel_flagged": 1,
+      "known_flagged": 0,
+      "serious_novel": 0,
+      "fdr": 1.0,
+      "top_novel_events": [
         "ACUTE KIDNEY INJURY"
       ]
     },
     {
       "drug": "levothyroxine",
-      "flagged_total": 9,
-      "serious_flagged": 0,
-      "top_events": [
-        "CONSTIPATION",
-        "FALL",
-        "ALOPECIA"
-      ]
+      "flagged_total": 0,
+      "novel_flagged": 0,
+      "known_flagged": 0,
+      "serious_novel": 0,
+      "fdr": 0.0,
+      "top_novel_events": []
     },
     {
       "drug": "amlodipine",
-      "flagged_total": 11,
-      "serious_flagged": 0,
-      "top_events": [
-        "ACUTE KIDNEY INJURY",
-        "BLOOD PRESSURE INCREASED",
-        "HYPOTENSION"
-      ]
+      "flagged_total": 0,
+      "novel_flagged": 0,
+      "known_flagged": 0,
+      "serious_novel": 0,
+      "fdr": 0.0,
+      "top_novel_events": []
     },
     {
       "drug": "cetirizine",
-      "flagged_total": 30,
-      "serious_flagged": 0,
-      "top_events": [
+      "flagged_total": 18,
+      "novel_flagged": 18,
+      "known_flagged": 0,
+      "serious_novel": 0,
+      "fdr": 1.0,
+      "top_novel_events": [
         "PEMPHIGUS",
         "HAND DEFORMITY",
         "PERICARDITIS"

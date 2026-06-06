@@ -32,32 +32,32 @@ RATE_LIMIT_SLEEP = 0.35   # seconds between calls — stays under 3/sec limit
 
 # ── Caching ───────────────────────────────────────────────────────────────────
 
-def _cache_key(drug: str, event: str) -> str:
-    raw = f"{drug.lower()}_{event.lower()}"
+def _cache_key(drug: str, event_or_key: str) -> str:
+    raw = f"{drug.lower()}_{event_or_key.lower()}"
     return hashlib.md5(raw.encode()).hexdigest()[:12]
 
 
-def _load_cache(drug: str, event: str) -> list | None:
-    p = CACHE_DIR / f"{_cache_key(drug, event)}.json"
+def _load_cache(drug: str, event_or_key: str) -> list | None:
+    p = CACHE_DIR / f"{_cache_key(drug, event_or_key)}.json"
     if p.exists():
         with open(p) as f:
             return json.load(f)
     return None
 
 
-def _save_cache(drug: str, event: str, data: list):
-    p = CACHE_DIR / f"{_cache_key(drug, event)}.json"
+def _save_cache(drug: str, event_or_key: str, data: list):
+    p = CACHE_DIR / f"{_cache_key(drug, event_or_key)}.json"
     with open(p, "w") as f:
         json.dump(data, f, indent=2)
 
 
 # ── PubMed API calls ──────────────────────────────────────────────────────────
 
-def _build_query(drug_name: str, event_name: str, strict: bool = True) -> str:
-    drug_term = f'"{drug_name}"[Title/Abstract]'
+def _build_query(drug_name: str, event_name: str, strict: bool = True,
+                 max_year: int = None) -> str:
+    drug_term  = f'"{drug_name}"[Title/Abstract]'
     event_term = f'"{event_name}"[Title/Abstract]'
-    
-    # Causal/association terms — forces papers that study the relationship
+
     causal_terms = (
         '("adverse effect"[Title/Abstract] OR '
         '"side effect"[Title/Abstract] OR '
@@ -67,9 +67,14 @@ def _build_query(drug_name: str, event_name: str, strict: bool = True) -> str:
         '"risk of"[Title/Abstract] OR '
         '"adverse reaction"[Title/Abstract])'
     )
-    
+
     base = f"({drug_term}) AND ({event_term}) AND {causal_terms}"
-    
+
+    # Retrospective purity — exclude papers after FDA warning year.
+    # Prevents future knowledge leakage in retrospective evaluation.
+    if max_year:
+        base += f' AND ("1900"[PDAT] : "{max_year}"[PDAT])'
+
     if strict:
         pub_types = (
             "(clinical trial[pt] OR randomized controlled trial[pt] OR "
@@ -77,8 +82,7 @@ def _build_query(drug_name: str, event_name: str, strict: bool = True) -> str:
             "case reports[pt] OR review[pt])"
         )
         return f"{base} AND {pub_types}"
-    
-    # Fallback: drop pub type filter but keep causal terms
+
     return base
 
 
@@ -204,45 +208,55 @@ def _parse_pubmed_xml(xml_text: str) -> list[dict]:
 # ── Public interface ──────────────────────────────────────────────────────────
 
 def search_drug_event(drug_name: str, event_name: str,
-                      max_results: int = 10) -> list[dict]:
+                      max_results: int = 10,
+                      max_year: int = None) -> list[dict]:
     """
     Main function. Searches PubMed for articles about drug + adverse event.
     Returns list of article dicts with: pmid, title, abstract, authors,
     year, journal, publication_types.
 
+    Args:
+        max_year: if set, only return papers published up to this year.
+                  Used for retrospective purity — prevents future knowledge
+                  leakage when evaluating pre-warning FAERS data.
+
     Falls back to unfiltered query if strict search returns < 3 results.
-    Caches results to avoid repeated API calls during development.
+    Caches results — note: cache key includes max_year so cutoff/no-cutoff
+    runs are cached separately.
     """
-    # Check cache
-    cached = _load_cache(drug_name, event_name)
+    # Cache key includes max_year to keep cutoff/no-cutoff results separate
+    cache_key = f"{drug_name}_{event_name}_{max_year or 'all'}"
+    cached = _load_cache(drug_name, cache_key)
     if cached is not None:
-        print(f"  [cache] PubMed: {drug_name} + {event_name} ({len(cached)} articles)")
+        print(f"  [cache] PubMed: {drug_name} + {event_name} "
+              f"(year≤{max_year or 'all'}, {len(cached)} articles)")
         return cached
 
-    print(f"  Searching PubMed: '{drug_name}' + '{event_name}'...")
+    print(f"  Searching PubMed: '{drug_name}' + '{event_name}'"
+          f"{f' (≤{max_year})' if max_year else ''}...")
 
     # Try strict query first
-    query  = _build_query(drug_name, event_name, strict=True)
-    pmids  = _search_pmids(query, max_results)
+    query = _build_query(drug_name, event_name, strict=True, max_year=max_year)
+    pmids = _search_pmids(query, max_results)
     time.sleep(RATE_LIMIT_SLEEP)
 
     # Fallback to broad query if too few results
     if len(pmids) < 3:
         print(f"    Strict query returned {len(pmids)} results, trying broad query...")
-        query = _build_query(drug_name, event_name, strict=False)
+        query = _build_query(drug_name, event_name, strict=False, max_year=max_year)
         pmids = _search_pmids(query, max_results)
         time.sleep(RATE_LIMIT_SLEEP)
 
     if not pmids:
         print(f"    No PubMed results found for {drug_name} + {event_name}")
-        _save_cache(drug_name, event_name, [])
+        _save_cache(drug_name, cache_key, [])
         return []
 
     articles = _fetch_abstracts(pmids)
     time.sleep(RATE_LIMIT_SLEEP)
 
     print(f"    Found {len(articles)} articles with abstracts")
-    _save_cache(drug_name, event_name, articles)
+    _save_cache(drug_name, cache_key, articles)
     return articles
 
 
