@@ -46,88 +46,66 @@ with tab1:
         max_signals = st.slider("Max signals to analyse", 3, 15, 5)
 
     if st.button("Run Signal Detection", type="primary"):
-        try:
-            # ── Stage 1: FAERS + Statistics ──────────────────────────
-            progress = st.progress(0, text="Connecting to FAERS...")
-            status   = st.empty()
-            status.info("⏳ Fetching adverse event counts from FAERS...")
+        with st.spinner("Querying FAERS and computing signals..."):
+            try:
+                from signals.compute_signals import detect_signals
+                signals = detect_signals(drug_name, date_end=date_end,
+                                        top_n=50, verbose=False, enrich=False)
+                flagged = [s for s in signals if s["flagged"]]
 
-            from signals.compute_signals import detect_signals
-            progress.progress(15, text="Fetching FAERS event counts...")
+                st.success(f"Found {len(flagged)} flagged signals out of {len(signals)} events")
 
-            signals = detect_signals(drug_name, date_end=date_end,
-                                    top_n=50, verbose=False, enrich=False)
-            flagged = [s for s in signals if s["flagged"]]
+                # Signal table
+                if flagged:
+                    df = pd.DataFrame(flagged)
+                    display_cols = ["event", "count", "prr", "ror", "chi_squared",
+                                   "is_serious", "threshold_used", "composite_score"]
+                    available_cols = [c for c in display_cols if c in df.columns]
+                    st.dataframe(df[available_cols], use_container_width=True)
 
-            progress.progress(50, text="Computing disproportionality statistics...")
-            status.info(f"✅ FAERS complete — {len(flagged)} signals flagged out of {len(signals)} events")
+                    # Evidence synthesis for top signals
+                    st.subheader("Evidence Reports")
+                    with st.spinner("Fetching labels, PubMed, and running LLM synthesis..."):
+                        from rag.synthesize_report import synthesize_all_signals
+                        from data.fetch_label import fetch_label_sections
 
-            st.success(f"Found {len(flagged)} flagged signals out of {len(signals)} events")
+                        label = fetch_label_sections(drug_name)
+                        reports = synthesize_all_signals(drug_name, flagged, label,
+                                                        max_signals=max_signals)
+                
 
-            # Signal table
-            if flagged:
-                df = pd.DataFrame(flagged)
-                display_cols = ["event", "count", "prr", "ror", "chi_squared",
-                               "is_serious", "threshold_used", "composite_score"]
-                available_cols = [c for c in display_cols if c in df.columns]
-                st.dataframe(df[available_cols], use_container_width=True)
+                        for r in reports:
+                            novel = "🆕 NOVEL" if r.get("label_status") == "novel" else "📋 Known"
+                            grade = r.get("evidence_grade", "?")
 
-                # ── Stage 2: DailyMed label ───────────────────────────
-                progress.progress(60, text="Fetching DailyMed drug label...")
-                status.info("⏳ Fetching DailyMed drug label (parallel fetch across all manufacturers)...")
+                            with st.expander(f"{r.get('event', '?')} — {grade} | {novel}"):
+                                col_a, col_b, col_c = st.columns(3)
+                                col_a.metric("PRR", r.get("prr", "?"))
+                                col_b.metric("Evidence Grade", grade)
+                                col_c.metric("PubMed Hits", r.get("pubmed_count", 0))
 
-                from data.fetch_label import fetch_label_sections
-                label = fetch_label_sections(drug_name)
+                                if r.get("mechanism"):
+                                    st.write(f"**Mechanism:** {r['mechanism']}")
+                                if r.get("clinical_significance"):
+                                    st.write(f"**Significance:** {r['clinical_significance']}")
+                                if r.get("recommendation"):
+                                    st.write(f"**Recommendation:** {r['recommendation']}")
+                                if r.get("abstention_reason"):
+                                    st.warning(f"Abstained: {r['abstention_reason']}")
+                                if r.get("key_citations"):
+                                    st.write("**Citations:**")
+                                    for cite in r["key_citations"][:5]:
+                                        st.write(f"- {cite}")   
 
-                progress.progress(75, text="Searching PubMed literature...")
-                status.info("⏳ Searching PubMed and running LLM evidence synthesis...")
+                    # Store for Tab 2
+                    st.session_state["flagged"] = flagged
+                    st.session_state["reports"] = reports
+                    st.session_state["drug"] = drug_name
 
-                # ── Stage 3: PubMed + LLM synthesis ──────────────────
-                from rag.synthesize_report import synthesize_all_signals
-                reports = synthesize_all_signals(drug_name, flagged, label,
-                                                max_signals=max_signals)
-
-                progress.progress(95, text="Rendering evidence reports...")
-                status.info("⏳ Rendering evidence reports...")
-
-                # ── Stage 4: Render evidence reports ─────────────────
-                st.subheader("Evidence Reports")
-                for r in reports:
-                    novel = "🆕 NOVEL" if r.get("label_status") == "novel" else "📋 Known"
-                    grade = r.get("evidence_grade", "?")
-
-                    with st.expander(f"{r.get('event', '?')} — {grade} | {novel}"):
-                        col_a, col_b, col_c = st.columns(3)
-                        col_a.metric("PRR", r.get("prr", "?"))
-                        col_b.metric("Evidence Grade", grade)
-                        col_c.metric("PubMed Hits", r.get("pubmed_count", 0))
-
-                        if r.get("mechanism"):
-                            st.write(f"**Mechanism:** {r['mechanism']}")
-                        if r.get("clinical_significance"):
-                            st.write(f"**Significance:** {r['clinical_significance']}")
-                        if r.get("recommendation"):
-                            st.write(f"**Recommendation:** {r['recommendation']}")
-                        if r.get("abstention_reason"):
-                            st.warning(f"Abstained: {r['abstention_reason']}")
-                        if r.get("key_citations"):
-                            st.write("**Citations:**")
-                            for cite in r["key_citations"][:5]:
-                                st.write(f"- {cite}")
-
-                # ── Done ──────────────────────────────────────────────
-                progress.progress(100, text="Complete.")
-                status.success("✅ Analysis complete.")
-
-                # Store for Tab 2
-                st.session_state["flagged"] = flagged
-                st.session_state["reports"] = reports
-                st.session_state["drug"] = drug_name
-
-        except Exception as e:
-            st.error(f"Error: {e}")
-            import traceback
-            st.code(traceback.format_exc())
+            except Exception as e:
+                st.error(f"Error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
 
 
 # ── Tab 2: Follow-Up Priority ────────────────────────────────────

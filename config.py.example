@@ -4,7 +4,7 @@
 FAERS_BASE_URL = "https://api.fda.gov/drug/event.json"
 
 # ── API keys ──
-GROQ_API_KEY = "your-groq-api-key-here"
+GROQ_API_KEY = "your_api_key"
 GROQ_MODEL = "llama-3.1-8b-instant"
 
 # ── Cache directories ──

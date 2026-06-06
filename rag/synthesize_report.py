@@ -101,6 +101,12 @@ Label match detail: {label_match_detail}
 PUBLISHED LITERATURE (PubMed abstracts):
 {pubmed_evidence}
 
+CRITICAL RULES:
+- If fewer than 3 PubMed articles directly discuss this drug causing this event, evidence_grade CANNOT be "Strong". Use "Moderate" at most.
+- If the mechanism is unknown or unclear, evidence_grade CANNOT be "Strong". Use "Weak" or "Moderate".
+- If the PubMed articles mention the drug incidentally (patient was "also taking" the drug) rather than studying it as the cause, do NOT cite them as supporting evidence.
+- Only grade as "Strong" when multiple independent studies or case reports specifically investigate this drug causing this event.
+
 TASK: Based on the statistical signal, label status, and published evidence,
 provide your assessment as JSON with exactly these fields:
 
@@ -112,6 +118,32 @@ provide your assessment as JSON with exactly these fields:
   "key_citations": ["PMID:xxxxx - brief description", ...],
   "confidence_reasoning": "Why this evidence grade? (1 sentence)",
   "is_actionable": true or false
+}}"""
+
+KNOWN_SIGNAL_PROMPT = """This adverse event is ALREADY DOCUMENTED in the FDA-approved drug label.
+Your job is to confirm it, not discover it.
+
+DRUG: {drug}
+ADVERSE EVENT: {event}
+
+STATISTICAL SIGNAL:
+- PRR: {prr}
+- FAERS report count: {count}
+
+LABEL DOCUMENTATION:
+Section: {label_section}
+Relevant text: {label_text}
+
+This is a KNOWN, LABELED adverse event. Respond as JSON:
+
+{{
+  "evidence_grade": "Confirmed",
+  "mechanism": "Brief mechanism from label text. Say 'See product label' if not clear from the text.",
+  "clinical_significance": "This is a documented adverse event with PRR {prr} indicating current reporting rate. (1 sentence)",
+  "recommendation": "Continue routine pharmacovigilance monitoring. (1 sentence)",
+  "key_citations": ["FDA-approved product label, {label_section} section"],
+  "confidence_reasoning": "Event is documented in the FDA-approved label",
+  "is_actionable": false
 }}"""
 
 ABSTENTION_PROMPT = """Analyze this drug-event pair where evidence is LIMITED.
@@ -172,9 +204,19 @@ def synthesize_signal_report(signal, label_gap, pubmed_articles):
     else:
         pubmed_text = "No relevant PubMed articles found."
 
-    # Decide which prompt to use based on evidence availability
-    if len(pubmed_articles) < 2 and label_gap.get("status") == "novel":
-        # Sparse evidence — use abstention prompt
+    # Decide which prompt to use
+    if label_gap.get("status") in ["known", "known_different_wording"]:
+        # KNOWN SIGNAL — use label-based prompt, skip PubMed entirely
+        prompt = KNOWN_SIGNAL_PROMPT.format(
+            drug=drug,
+            event=event,
+            prr=signal["prr"],
+            count=signal["count"],
+            label_section=label_gap.get("matched_section", "adverse_reactions"),
+            label_text=label_gap.get("matched_text", "See product label")[:500],
+        )
+    elif len(pubmed_articles) < 2 and label_gap.get("status") == "novel":
+        # NOVEL + THIN EVIDENCE — use abstention prompt
         prompt = ABSTENTION_PROMPT.format(
             drug=drug,
             event=event,
@@ -184,7 +226,7 @@ def synthesize_signal_report(signal, label_gap, pubmed_articles):
             pubmed_count=len(pubmed_articles),
         )
     else:
-        # Sufficient evidence — use full report prompt
+        # NOVEL + SUFFICIENT EVIDENCE — use full report prompt
         prompt = SIGNAL_REPORT_PROMPT.format(
             drug=drug,
             event=event,
@@ -220,6 +262,29 @@ def synthesize_signal_report(signal, label_gap, pubmed_articles):
             "recommendation": "Manual review required — LLM output was not valid JSON",
             "is_actionable": False,
         }
+
+    # Post-LLM grade correction — enforce evidence rules
+    grade = report.get("evidence_grade", "")
+    mechanism = report.get("mechanism", "")
+    
+    # Rule 1: Cannot be Strong with fewer than 3 PubMed articles
+    if grade == "Strong" and len(pubmed_articles) < 3:
+        report["evidence_grade"] = "Moderate"
+        report["grade_adjusted"] = "Downgraded: fewer than 3 directly supporting articles"
+    
+    # Rule 2: Cannot be Strong with unknown mechanism
+    mechanism_lower = mechanism.lower()
+    if grade == "Strong" and any(
+        phrase in mechanism_lower 
+        for phrase in ["unclear", "unknown", "not fully understood", 
+                       "not well established", "exact mechanism"]
+    ):
+        report["evidence_grade"] = "Weak"
+        report["grade_adjusted"] = "Downgraded: mechanism unknown or unclear"
+    
+    # Rule 3: Cannot be Strong for abstained signals
+    if report.get("abstained"):
+        report["evidence_grade"] = "Inconclusive"    
 
     # Attach metadata
     report["drug"] = drug

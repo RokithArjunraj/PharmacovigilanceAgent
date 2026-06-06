@@ -13,7 +13,7 @@ def _get(key, default=None):
 FAERS_BASE_URL = "https://api.fda.gov/drug/event.json"
 
 # ── API keys ──
-GROQ_API_KEY = _get("GROQ_API_KEY", "your-groq-api-key-here")
+GROQ_API_KEY = _get("GROQ_API_KEY", "your_groq_api_key_here")
 GROQ_MODEL   = _get("GROQ_MODEL", "llama-3.1-8b-instant")
 
 # ── Cache directories ──
