@@ -17,7 +17,7 @@ import math
 import pandas as pd
 import sys
 import os
-
+import re
 from data.fetch_label import fetch_label_sections
 from signals.check_label_gap import check_label_gap
 from signals.serious_outcomes import is_serious_dynamic
@@ -243,6 +243,18 @@ def detect_signals(drug_name, date_end=None, top_n=100, verbose=True, enrich=Tru
 
     # Step 1: Get event counts
     events = client.get_event_counts(drug_name, date_end=date_end, limit=top_n)
+    # Smart sort: serious events first, then by frequency
+    # Ensures serious signals are evaluated even with low report counts
+    events = sorted(
+        events,
+        key=lambda r: (
+            0 if any(
+                re.search(r'\b' + re.escape(s) + r'\b', r["term"].lower())
+                for s in SERIOUS_OUTCOMES
+            ) else 1,
+            -r["count"]
+        )
+    )
     if not events:
         if verbose:
             print(f"  [!] No FAERS data for '{drug_name}'")
@@ -253,8 +265,15 @@ def detect_signals(drug_name, date_end=None, top_n=100, verbose=True, enrich=Tru
     # Step 2: Get totals for contingency table
     drug_total = client.get_total_drug_reports(drug_name, date_end=date_end)
     db_total = client.get_total_database_size(date_end=date_end)
+    
     if verbose:
         print(f"  Drug reports: {drug_total:,} | DB total: {db_total:,}")
+
+    # Bulk fetch all event totals in parallel — replaces sequential calls
+    event_names = [e["term"] for e in events]
+    event_totals = client.get_total_event_reports_bulk(event_names, date_end=date_end)
+    if verbose:
+        print(f"  Event totals fetched in parallel: {len(event_totals)}")
 
     # ── NEW v3: Fetch FAERS reporter-flagged serious events for this drug ──
     # serious:1 in FAERS = reporter flagged as death/hospitalisation/
@@ -284,7 +303,7 @@ def detect_signals(drug_name, date_end=None, top_n=100, verbose=True, enrich=Tru
         if a < 2:
             continue
 
-        event_total = client.get_total_event_reports(event_name, date_end=date_end)
+        event_total = event_totals.get(event_name, 0)
 
         b = max(drug_total - a, 0)
         c = max(event_total - a, 0)

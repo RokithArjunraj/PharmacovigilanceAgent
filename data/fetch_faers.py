@@ -11,6 +11,7 @@ Changes from v1:
 API docs: https://open.fda.gov/apis/drug/event/
 """
 
+from concurrent.futures import ThreadPoolExecutor
 import requests
 import json
 import time
@@ -175,6 +176,27 @@ class FAERSClient:
             return data.get("meta", {}).get("results", {}).get("total", 0)
         except requests.exceptions.HTTPError:
             return 0
+        
+    def get_total_event_reports_bulk(self, event_names: list, date_end=None) -> dict:
+        """
+        Fetch total event report counts for multiple events in parallel.
+        Returns dict of {event_name: count}
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        results = {}
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {
+                executor.submit(self.get_total_event_reports, name, date_end): name
+                for name in event_names
+            }
+            for future in as_completed(futures):
+                name = futures[future]
+                try:
+                    results[name] = future.result()
+                except Exception:
+                    results[name] = 0
+        return results
+    
 
     def get_total_database_size(self, date_end=None):
         """Approximate total reports in FAERS."""

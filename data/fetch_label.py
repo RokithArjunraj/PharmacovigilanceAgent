@@ -10,6 +10,7 @@ What you learn here:
   - Cache aggressively — labels rarely change
 """
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 from logging import root
 import re
@@ -17,7 +18,7 @@ import time
 import requests
 import xml.etree.ElementTree as ET
 from pathlib import Path
-
+from concurrent.futures import ThreadPoolExecutor, as_completed
 CACHE_DIR = Path("data/labels")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -200,15 +201,18 @@ def fetch_label_sections(drug_name: str) -> dict:
     # Fetch and merge all labels
     merged = {k: set() for k in SECTION_CODES}  # use sets to deduplicate
 
-    for setid in setids:
-        xml_text = _fetch_xml(setid)
-        if not xml_text:
-            continue
-        sections = _parse_sections(xml_text)
-        for key, text in sections.items():
-            if text.strip():
-                merged[key].add(text.strip())
-        time.sleep(0.3)  # rate limit
+    # REPLACE with:
+    
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(_fetch_xml, setid): setid for setid in setids}
+        for future in as_completed(futures):
+            xml_text = future.result()
+            if not xml_text:
+                continue
+            sections = _parse_sections(xml_text)
+            for key, text in sections.items():
+                if text.strip():
+                    merged[key].add(text.strip())
 
     # Join all unique section texts
     final = {k: " ".join(merged[k]) for k in SECTION_CODES}
