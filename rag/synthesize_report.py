@@ -115,7 +115,7 @@ provide your assessment as JSON with exactly these fields:
   "mechanism": "Brief plausible biological mechanism (1-2 sentences). Say 'Unknown mechanism' if no evidence.",
   "clinical_significance": "What does this mean for patient safety? (1-2 sentences)",
   "recommendation": "What should a pharmacovigilance team do? (1-2 sentences)",
-  "key_citations": ["PMID:xxxxx - brief description", ...],
+  "key_citations": ["PMID:12345678 - brief description of finding", ...],
   "confidence_reasoning": "Why this evidence grade? (1 sentence)",
   "is_actionable": true or false
 }}"""
@@ -169,7 +169,7 @@ Respond as JSON:
 
 # ── Main synthesis function ──────────────────────────────────────
 
-def synthesize_signal_report(signal, label_gap, pubmed_articles):
+def synthesize_signal_report(signal, label_gap, pubmed_articles, date_end=None):
     """
     Generate an LLM-powered evidence report for a flagged signal.
 
@@ -203,6 +203,11 @@ def synthesize_signal_report(signal, label_gap, pubmed_articles):
         pubmed_text = "\n\n".join(evidence_parts)
     else:
         pubmed_text = "No relevant PubMed articles found."
+
+    # RETROSPECTIVE MODE: treat all signals as novel
+    # Current label has future information (warnings added after cutoff)
+    if date_end:
+        label_gap = {**label_gap, "status": "novel"}
 
     # Decide which prompt to use
     if label_gap.get("status") in ["known", "known_different_wording"]:
@@ -299,7 +304,7 @@ def synthesize_signal_report(signal, label_gap, pubmed_articles):
 # ── Batch synthesis ──────────────────────────────────────────────
 
 def synthesize_all_signals(drug_name, flagged_signals, label_sections,
-                           max_signals=10):
+                           max_signals=10, date_end=None):
     """
     Run full synthesis pipeline for a drug's flagged signals.
 
@@ -336,11 +341,11 @@ def synthesize_all_signals(drug_name, flagged_signals, label_sections,
         print(f"    Label: {gap['status']} (score={gap['match_score']})")
 
         # Step 2: Get PubMed evidence
-        articles = search_drug_event(drug_name, event, max_results=5)
+        articles = search_drug_event(drug_name, event, max_results=5, date_end=date_end)
         print(f"    PubMed: {len(articles)} articles found")
 
         # Step 3: LLM synthesis
-        report = synthesize_signal_report(signal, gap, articles)
+        report = synthesize_signal_report(signal, gap, articles, date_end=date_end)
         if report:
             reports.append(report)
             grade = report.get("evidence_grade", "?")

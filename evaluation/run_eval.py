@@ -343,7 +343,7 @@ def run_rag_grading_eval(pubmed_cutoff=True):
                 })
 
             # Step 7: LLM synthesis using RAG-retrieved chunks
-            report = synthesize_signal_report(signal, gap, rag_articles)
+            report = synthesize_signal_report(signal, gap, rag_articles, date_end=cutoff)
 
             actual_grade = report.get("evidence_grade", "Unknown") if report else "Error"
             acceptable   = GRADE_GROUPS.get(expected_grade, [expected_grade])

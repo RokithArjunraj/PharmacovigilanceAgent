@@ -71,8 +71,8 @@ with tab1:
 
                         label = fetch_label_sections(drug_name)
                         reports = synthesize_all_signals(drug_name, flagged, label,
-                                                        max_signals=max_signals)
-                
+                                                        max_signals=max_signals,
+                                                        date_end=date_end)
 
                         for r in reports:
                             novel = "🆕 NOVEL" if r.get("label_status") == "novel" else "📋 Known"

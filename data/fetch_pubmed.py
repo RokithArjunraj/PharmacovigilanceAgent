@@ -86,7 +86,7 @@ def _build_query(drug_name: str, event_name: str, strict: bool = True,
     return base
 
 
-def _search_pmids(query: str, max_results: int = 10) -> list[str]:
+def _search_pmids(query: str, max_results: int = 10, date_end: str = None) -> list[str]:
     """Run esearch, return list of PMIDs."""
     params = {
         "db":      "pubmed",
@@ -94,6 +94,11 @@ def _search_pmids(query: str, max_results: int = 10) -> list[str]:
         "retmax":  max_results,
         "retmode": "json",
     }
+    # Retrospective mode: only papers published before cutoff date
+    if date_end and len(date_end) == 8:
+        params["mindate"] = "1900/01/01"
+        params["maxdate"] = f"{date_end[:4]}/{date_end[4:6]}/{date_end[6:8]}"
+        params["datetype"] = "pdat"
     try:
         resp = requests.get(ESEARCH_URL, params=params, timeout=15)
         resp.raise_for_status()
@@ -208,7 +213,7 @@ def _parse_pubmed_xml(xml_text: str) -> list[dict]:
 # ── Public interface ──────────────────────────────────────────────────────────
 
 def search_drug_event(drug_name: str, event_name: str,
-                      max_results: int = 10,
+                      max_results: int = 10, date_end: str = None,
                       max_year: int = None) -> list[dict]:
     """
     Main function. Searches PubMed for articles about drug + adverse event.
@@ -224,6 +229,8 @@ def search_drug_event(drug_name: str, event_name: str,
     Caches results — note: cache key includes max_year so cutoff/no-cutoff
     runs are cached separately.
     """
+    if max_year is None:
+        max_year = int(date_end[:4]) if date_end else None
     # Cache key includes max_year to keep cutoff/no-cutoff results separate
     cache_key = f"{drug_name}_{event_name}_{max_year or 'all'}"
     cached = _load_cache(drug_name, cache_key)
@@ -237,14 +244,14 @@ def search_drug_event(drug_name: str, event_name: str,
 
     # Try strict query first
     query = _build_query(drug_name, event_name, strict=True, max_year=max_year)
-    pmids = _search_pmids(query, max_results)
+    pmids  = _search_pmids(query, max_results, date_end=date_end)
     time.sleep(RATE_LIMIT_SLEEP)
 
     # Fallback to broad query if too few results
     if len(pmids) < 3:
         print(f"    Strict query returned {len(pmids)} results, trying broad query...")
         query = _build_query(drug_name, event_name, strict=False, max_year=max_year)
-        pmids = _search_pmids(query, max_results)
+        pmids = _search_pmids(query, max_results, date_end=date_end)
         time.sleep(RATE_LIMIT_SLEEP)
 
     if not pmids:
