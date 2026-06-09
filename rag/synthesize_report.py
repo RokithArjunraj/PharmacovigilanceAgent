@@ -79,8 +79,35 @@ def _call_llm(prompt, system_prompt=""):
 
 SYSTEM_PROMPT = """You are a pharmacovigilance scientist reviewing adverse event signals.
 You provide factual, evidence-based assessments. You cite sources explicitly.
-When evidence is insufficient, you say so clearly — never speculate.
-Respond ONLY in valid JSON format with no additional text or markdown."""
+Respond ONLY in valid JSON format with no additional text or markdown.
+
+EVIDENCE GRADING CRITERIA (use these definitions exactly):
+
+STRONG — Any ONE of the following is sufficient:
+  - A meta-analysis, systematic review, or large cohort study showing statistically significant association
+  - Multiple independent case reports/series specifically investigating this drug causing this event
+  - A PRR >= 10 with >= 50 FAERS reports AND at least one published study (any design) supporting the association
+  - A known pharmacological mechanism that directly explains the adverse event (e.g. NAPQI pathway for paracetamol hepatotoxicity)
+  - An FDA Drug Safety Communication, boxed warning, or REMS related to this event
+
+MODERATE — The signal has supporting evidence but falls short of Strong:
+  - A single well-designed study (cohort or case-control) with significant findings
+  - Multiple case reports with a plausible but unconfirmed mechanism
+  - PRR >= 5 with >= 30 FAERS reports and at least one relevant publication
+  - Biological plausibility based on drug class effects (e.g. all SGLT2 inhibitors and DKA)
+
+WEAK — Limited evidence that does not rule out the association:
+  - Only isolated case reports with no clear mechanism
+  - Published articles mention the drug incidentally but do not investigate the causal link
+  - PRR is elevated but case count is low (< 20 reports)
+
+INCONCLUSIVE — Cannot assess the relationship:
+  - Zero relevant PubMed articles AND no known pharmacological basis
+  - Available literature contradicts the association
+  - Signal is likely confounded (e.g. the event is the disease being treated)
+
+IMPORTANT: A very high PRR (>= 10) with substantial case count (>= 50) is itself strong statistical evidence.
+Do not default to Weak or Inconclusive when the disproportionality signal is overwhelming."""
 
 SIGNAL_REPORT_PROMPT = """Analyze this drug safety signal and return a JSON assessment.
 
@@ -94,6 +121,12 @@ STATISTICAL SIGNAL:
 - FAERS report count: {count}
 - Evans' criteria met: Yes (flagged signal)
 
+PRR INTERPRETATION:
+- PRR 2-5: modest disproportionality, could be noise or confounding
+- PRR 5-10: notable disproportionality, warrants investigation
+- PRR 10-50: strong disproportionality, hard to explain by chance alone
+- PRR > 50: extreme disproportionality, very strong statistical evidence of association
+
 LABEL STATUS: {label_status}
 Label match score: {label_match_score}
 Label match detail: {label_match_detail}
@@ -101,11 +134,18 @@ Label match detail: {label_match_detail}
 PUBLISHED LITERATURE (PubMed abstracts):
 {pubmed_evidence}
 
-CRITICAL RULES:
-- If fewer than 3 PubMed articles directly discuss this drug causing this event, evidence_grade CANNOT be "Strong". Use "Moderate" at most.
-- If the mechanism is unknown or unclear, evidence_grade CANNOT be "Strong". Use "Weak" or "Moderate".
-- If the PubMed articles mention the drug incidentally (patient was "also taking" the drug) rather than studying it as the cause, do NOT cite them as supporting evidence.
-- Only grade as "Strong" when multiple independent studies or case reports specifically investigate this drug causing this event.
+ARTICLE RELEVANCE CHECK:
+Before citing any article, verify it DIRECTLY discusses {drug} causing or being associated with {event}.
+Discard articles that:
+- Only mention {drug} as a co-medication the patient was taking
+- Study a different drug in the same class without mentioning {drug} specifically
+- Discuss {event} in a completely different therapeutic context
+
+GRADING GUIDANCE:
+- Use the EVIDENCE GRADING CRITERIA from your system instructions
+- Statistical signal strength (PRR, count) is REAL evidence — a PRR of {prr} with {count} reports is not to be dismissed
+- A very strong statistical signal (PRR >= 10, count >= 50) combined with even a single supporting study can justify "Strong"
+- Do NOT default to conservative grades when evidence converges from multiple sources (statistics + literature + mechanism)
 
 TASK: Based on the statistical signal, label status, and published evidence,
 provide your assessment as JSON with exactly these fields:
@@ -116,7 +156,7 @@ provide your assessment as JSON with exactly these fields:
   "clinical_significance": "What does this mean for patient safety? (1-2 sentences)",
   "recommendation": "What should a pharmacovigilance team do? (1-2 sentences)",
   "key_citations": ["PMID:12345678 - brief description of finding", ...],
-  "confidence_reasoning": "Why this evidence grade? (1 sentence)",
+  "confidence_reasoning": "Why this evidence grade? Mention the statistical signal strength alongside literature. (1-2 sentences)",
   "is_actionable": true or false
 }}"""
 
@@ -146,7 +186,7 @@ This is a KNOWN, LABELED adverse event. Respond as JSON:
   "is_actionable": false
 }}"""
 
-ABSTENTION_PROMPT = """Analyze this drug-event pair where evidence is LIMITED.
+ABSTENTION_PROMPT = """Analyze this drug-event pair where published literature evidence is LIMITED.
 
 DRUG: {drug}
 ADVERSE EVENT: {event}
@@ -154,17 +194,65 @@ PRR: {prr} (count: {count})
 Label status: {label_status}
 PubMed articles found: {pubmed_count}
 
-The statistical signal exists but literature evidence is sparse.
-Should this be escalated or marked as inconclusive?
+The statistical signal exists in FAERS but few or no PubMed articles were found.
+
+IMPORTANT: A strong statistical signal IS evidence, even without published literature.
+- If PRR >= 10 and count >= 50, this is a strong disproportionality signal that warrants at least "Moderate"
+- If PRR >= 5 and count >= 20, this warrants at least "Weak" with a recommendation for urgent literature review
+- If PRR < 5 or count < 20, mark as "Inconclusive" pending further data
 
 Respond as JSON:
 {{
-  "evidence_grade": "Weak" or "Inconclusive",
-  "recommendation": "Specific next step (1 sentence)",
-  "abstention_reason": "Why evidence is insufficient (1 sentence)",
-  "is_actionable": false,
-  "needs_followup": true or false
+  "evidence_grade": "Moderate" or "Weak" or "Inconclusive",
+  "mechanism": "Any known pharmacological basis, or 'Unknown mechanism' if none.",
+  "recommendation": "Specific next step for the pharmacovigilance team (1 sentence)",
+  "abstention_reason": "Why literature evidence is insufficient (1 sentence)",
+  "clinical_significance": "Potential impact on patient safety based on the statistical signal (1 sentence)",
+  "key_citations": [],
+  "confidence_reasoning": "Grade justification considering statistical signal strength (1 sentence)",
+  "is_actionable": true or false,
+  "needs_followup": true
 }}"""
+
+
+# ── Article relevance filter ────────────────────────────────────
+
+def _filter_relevant_articles(drug, event, articles):
+    """
+    Filter PubMed articles to only those that directly discuss
+    the drug-event pair. Removes tangentially related articles
+    that mention the drug incidentally or study a different condition.
+
+    Returns (relevant_articles, discarded_count)
+    """
+    drug_lower = drug.lower()
+    event_words = set(event.lower().replace("-", " ").split())
+    # Remove generic words that appear everywhere
+    stopwords = {"of", "the", "a", "an", "in", "to", "and", "with", "by", "for", "or", "not"}
+    event_words -= stopwords
+
+    relevant = []
+    for article in articles:
+        text = (
+            article.get("title", "") + " " + article.get("abstract", "")
+        ).lower()
+
+        # Check 1: drug name must appear in text
+        has_drug = drug_lower in text
+
+        # Check 2: at least half the event words must appear
+        matching_words = sum(1 for w in event_words if w in text)
+        has_event = matching_words >= max(len(event_words) // 2, 1)
+
+        if has_drug and has_event:
+            relevant.append(article)
+
+    discarded = len(articles) - len(relevant)
+    if discarded > 0:
+        print(f"    Relevance filter: kept {len(relevant)}/{len(articles)} articles "
+              f"(discarded {discarded} tangentially related)")
+
+    return relevant, discarded
 
 
 # ── Main synthesis function ──────────────────────────────────────
@@ -190,6 +278,9 @@ def synthesize_signal_report(signal, label_gap, pubmed_articles, date_end=None):
 
     print(f"  Synthesizing report: {drug} + {event}...")
 
+    # Filter articles to only those directly relevant to this drug-event pair
+    pubmed_articles, discarded = _filter_relevant_articles(drug, event, pubmed_articles)
+
     # Build the PubMed evidence section for the prompt
     if pubmed_articles:
         evidence_parts = []
@@ -202,7 +293,13 @@ def synthesize_signal_report(signal, label_gap, pubmed_articles, date_end=None):
             )
         pubmed_text = "\n\n".join(evidence_parts)
     else:
-        pubmed_text = "No relevant PubMed articles found."
+        if discarded > 0:
+            pubmed_text = (
+                f"No directly relevant PubMed articles found "
+                f"({discarded} tangentially related articles were excluded)."
+            )
+        else:
+            pubmed_text = "No relevant PubMed articles found."
 
     # RETROSPECTIVE MODE: treat all signals as novel
     # Current label has future information (warnings added after cutoff)
@@ -220,8 +317,8 @@ def synthesize_signal_report(signal, label_gap, pubmed_articles, date_end=None):
             label_section=label_gap.get("matched_section", "adverse_reactions"),
             label_text=label_gap.get("matched_text", "See product label")[:500],
         )
-    elif len(pubmed_articles) < 2 and label_gap.get("status") == "novel":
-        # NOVEL + THIN EVIDENCE — use abstention prompt
+    elif len(pubmed_articles) == 0 and label_gap.get("status") == "novel":
+        # NOVEL + ZERO LITERATURE — use abstention prompt (but it still considers PRR)
         prompt = ABSTENTION_PROMPT.format(
             drug=drug,
             event=event,
@@ -271,25 +368,48 @@ def synthesize_signal_report(signal, label_gap, pubmed_articles, date_end=None):
     # Post-LLM grade correction — enforce evidence rules
     grade = report.get("evidence_grade", "")
     mechanism = report.get("mechanism", "")
-    
-    # Rule 1: Cannot be Strong with fewer than 3 PubMed articles
-    if grade == "Strong" and len(pubmed_articles) < 3:
-        report["evidence_grade"] = "Moderate"
-        report["grade_adjusted"] = "Downgraded: fewer than 3 directly supporting articles"
-    
-    # Rule 2: Cannot be Strong with unknown mechanism
+    prr = signal.get("prr", 0)
+    count = signal.get("count", 0)
+
+    # ── Relevance-based downgrade ──────────────────────────────────
+    # If ZERO relevant articles AND no known mechanism AND weak stats → cap at Weak
     mechanism_lower = mechanism.lower()
-    if grade == "Strong" and any(
-        phrase in mechanism_lower 
-        for phrase in ["unclear", "unknown", "not fully understood", 
-                       "not well established", "exact mechanism"]
-    ):
-        report["evidence_grade"] = "Weak"
-        report["grade_adjusted"] = "Downgraded: mechanism unknown or unclear"
-    
-    # Rule 3: Cannot be Strong for abstained signals
+    has_unknown_mechanism = any(
+        phrase in mechanism_lower
+        for phrase in ["unknown mechanism", "no direct evidence",
+                       "no clear explanation", "no evidence linking"]
+    )
+
+    if grade == "Strong" and len(pubmed_articles) == 0 and has_unknown_mechanism:
+        report["evidence_grade"] = "Moderate"
+        report["grade_adjusted"] = "Downgraded: no literature and unknown mechanism"
+
+    # ── PRR-based floor grade (upgrade path) ──────────────────────
+    # Extreme statistical signals should not be graded below Moderate
+    grade = report.get("evidence_grade", "")
+    if prr >= 10 and count >= 50:
+        if grade in ("Weak", "Inconclusive"):
+            report["evidence_grade"] = "Moderate"
+            report["grade_adjusted"] = (
+                f"Upgraded from {grade}: PRR={prr:.1f} with {count} reports "
+                f"is strong statistical evidence"
+            )
+
+    # Overwhelming statistical signal with ANY literature → Strong floor
+    if prr >= 20 and count >= 100 and len(pubmed_articles) >= 1:
+        grade = report.get("evidence_grade", "")
+        if grade in ("Weak", "Inconclusive", "Moderate"):
+            report["evidence_grade"] = "Strong"
+            report["grade_adjusted"] = (
+                f"Upgraded from {grade}: PRR={prr:.1f} with {count} reports "
+                f"plus {len(pubmed_articles)} supporting article(s)"
+            )
+
+    # ── Abstention flag ──────────────────────────────────────────
     if report.get("abstained"):
-        report["evidence_grade"] = "Inconclusive"    
+        # Even abstained signals respect the PRR floor
+        if prr < 10 or count < 50:
+            report["evidence_grade"] = "Inconclusive"
 
     # Attach metadata
     report["drug"] = drug
